@@ -50,7 +50,7 @@ class String_PSQLCodableTests: XCTestCase {
         let dataTypes: [PSQLDataType] = [.text, .varchar, .name]
         
         for dataType in dataTypes {
-            let data = PSQLData(bytes: nil, dataType: dataType)
+            let data = PSQLData(bytes: nil, dataType: dataType, format: .binary)
             XCTAssertThrowsError(try data.decode(as: String.self, context: .forTests())) { error in
                 XCTAssertEqual((error as? PSQLCastingError)?.line, #line - 1)
                 XCTAssertEqual((error as? PSQLCastingError)?.file, #file)

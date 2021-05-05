@@ -25,7 +25,7 @@ extension PSQLBackendMessage {
             
             /// The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned
             /// from the statement variant of Describe, the format code is not yet known and will always be zero.
-            var formatCode: PSQLFormatCode
+            var formatCode: PSQLFormat
         }
         
         static func decode(from buffer: inout ByteBuffer) throws -> Self {
@@ -53,8 +53,8 @@ extension PSQLBackendMessage {
                 let dataTypeModifier = buffer.readInteger(as: Int32.self)!
                 let formatCodeInt16 = buffer.readInteger(as: Int16.self)!
                 
-                guard let formatCode = PSQLFormatCode(rawValue: formatCodeInt16) else {
-                    throw PartialDecodingError.valueNotRawRepresentable(value: formatCodeInt16, asType: PSQLFormatCode.self)
+                guard let formatCode = PSQLFormat(rawValue: formatCodeInt16) else {
+                    throw PartialDecodingError.valueNotRawRepresentable(value: formatCodeInt16, asType: PSQLFormat.self)
                 }
                 
                 let field = Column(

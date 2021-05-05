@@ -97,7 +97,7 @@ extension PSQLError {
 }
 
 extension PostgresFormatCode {
-    init(psqlFormatCode: PSQLFormatCode) {
+    init(psqlFormatCode: PSQLFormat) {
         switch psqlFormatCode {
         case .binary:
             self = .binary

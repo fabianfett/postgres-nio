@@ -112,7 +112,7 @@ class UUID_PSQLCodableTests: XCTestCase {
         let dataTypes: [PSQLDataType] = [.bool, .int8, .int2, .int4Array]
         
         for dataType in dataTypes {
-            let data = PSQLData(bytes: buffer, dataType: dataType)
+            let data = PSQLData(bytes: buffer, dataType: dataType, format: .binary)
             
             XCTAssertThrowsError(try data.decode(as: UUID.self, context: .forTests())) { error in
                 XCTAssertEqual((error as? PSQLCastingError)?.line, #line - 1)

@@ -11,7 +11,7 @@ class Bool_PSQLCodableTests: XCTestCase {
         XCTAssertEqual(value.psqlType, .bool)
         XCTAssertEqual(buffer.readableBytes, 1)
         XCTAssertEqual(buffer.getInteger(at: buffer.readerIndex, as: UInt8.self), 1)
-        let data = PSQLData(bytes: buffer, dataType: .bool)
+        let data = PSQLData(bytes: buffer, dataType: .bool, format: .binary)
         
         var result: Bool?
         XCTAssertNoThrow(result = try data.decode(as: Bool.self, context: .forTests()))
@@ -26,7 +26,7 @@ class Bool_PSQLCodableTests: XCTestCase {
         XCTAssertEqual(value.psqlType, .bool)
         XCTAssertEqual(buffer.readableBytes, 1)
         XCTAssertEqual(buffer.getInteger(at: buffer.readerIndex, as: UInt8.self), 0)
-        let data = PSQLData(bytes: buffer, dataType: .bool)
+        let data = PSQLData(bytes: buffer, dataType: .bool, format: .binary)
         
         var result: Bool?
         XCTAssertNoThrow(result = try data.decode(as: Bool.self, context: .forTests()))
@@ -36,7 +36,7 @@ class Bool_PSQLCodableTests: XCTestCase {
     func testDecodeBoolInvalidLength() {
         var buffer = ByteBuffer()
         buffer.writeInteger(Int64(1))
-        let data = PSQLData(bytes: buffer, dataType: .bool)
+        let data = PSQLData(bytes: buffer, dataType: .bool, format: .binary)
         
         XCTAssertThrowsError(try data.decode(as: Bool.self, context: .forTests())) { error in
             XCTAssert(error is PSQLCastingError)
@@ -46,7 +46,7 @@ class Bool_PSQLCodableTests: XCTestCase {
     func testDecodeBoolInvalidValue() {
         var buffer = ByteBuffer()
         buffer.writeInteger(UInt8(13))
-        let data = PSQLData(bytes: buffer, dataType: .bool)
+        let data = PSQLData(bytes: buffer, dataType: .bool, format: .binary)
         
         XCTAssertThrowsError(try data.decode(as: Bool.self, context: .forTests())) { error in
             XCTAssert(error is PSQLCastingError)

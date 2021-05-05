@@ -156,8 +156,9 @@ struct ExtendedQueryStateMachine {
             }
             
             return self.avoidingStateMachineCoW { state -> Action in
-                let row = dataRow.columns.enumerated().map { (index, buffer) in
-                    PSQLData(bytes: buffer, dataType: columns[index].dataType)
+                let row = dataRow.columns.enumerated().map { (index, buffer) -> PSQLData in
+                    let column = columns[index]
+                    return PSQLData(bytes: buffer, dataType: column.dataType, format: column.formatCode)
                 }
                 buffer.append(row)
                 state = .bufferingRows(columns, buffer, readOnEmpty: readOnEmpty)
@@ -173,8 +174,9 @@ struct ExtendedQueryStateMachine {
             
             return self.avoidingStateMachineCoW { state -> Action in
                 precondition(buffer.isEmpty, "Expected the buffer to be empty")
-                let row = dataRow.columns.enumerated().map { (index, buffer) in
-                    PSQLData(bytes: buffer, dataType: columns[index].dataType)
+                let row = dataRow.columns.enumerated().map { (index, buffer) -> PSQLData in
+                    let column = columns[index]
+                    return PSQLData(bytes: buffer, dataType: column.dataType, format: column.formatCode)
                 }
                 
                 state = .bufferingRows(columns, buffer, readOnEmpty: false)

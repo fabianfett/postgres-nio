@@ -2,20 +2,35 @@
 /// Currently will be zero (text) or one (binary).
 /// In a RowDescription returned from the statement variant of Describe,
 /// the format code is not yet known and will always be zero.
-enum PSQLFormatCode: Int16 {
+enum PSQLFormat: Int16, CustomStringConvertible {
     case text = 0
     case binary = 1
+    
+    var code: Int16 {
+        self.rawValue
+    }
+    
+    var description: String {
+        switch self {
+        case .text:
+            return ".text"
+        case .binary:
+            return ".binary"
+        }
+    }
 }
 
 struct PSQLData: Equatable {
     
     @usableFromInline var bytes: ByteBuffer?
     @usableFromInline var dataType: PSQLDataType
+    @usableFromInline var format: PSQLFormat
     
     /// use this only for testing
-    init(bytes: ByteBuffer?, dataType: PSQLDataType) {
+    init(bytes: ByteBuffer?, dataType: PSQLDataType, format: PSQLFormat) {
         self.bytes = bytes
         self.dataType = dataType
+        self.format = format
     }
     
     @inlinable
