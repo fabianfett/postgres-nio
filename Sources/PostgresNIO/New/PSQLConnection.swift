@@ -6,10 +6,30 @@ import class Foundation.JSONDecoder
 import struct Foundation.UUID
 import Logging
 
+/// An implementation of a single connection to the Postgres server.
+///
+/// To create a connection a `Configuration` is needed.
+///
+///     let eventLoop: EventLoop = ...
+///     let configuration = PSQLConnection.Configuration(
+///         host: "the.postgres.server",
+///         port: Int = 5432,
+///         username: "username",
+///         database: "optional database name",
+///         password: "optional password")
+///
+///     let connection = PSQLConnection.connect(
+///         configuration: configuration,
+///         logger: Logger(),
+///         eventLoop: eventLoop).wait()
+///
+/// Note: `wait()` is used in the example for simplicity. Never call `wait()` on an event loop.
 public final class PSQLConnection {
     
+    /// A structure to configure a Postgres connection.
     public struct Configuration {
         
+        ///
         public struct Coders {
             public var jsonEncoder: PSQLJSONEncoder
             public var jsonDecoder: PSQLJSONDecoder
@@ -19,6 +39,8 @@ public final class PSQLConnection {
                 self.jsonDecoder = jsonDecoder
             }
             
+            /// A default initializer that returns the Foundation `JSONEncoder` and `JSONDecoder` as the
+            /// json coders to use.
             public static var foundation: Coders {
                 Coders(jsonEncoder: JSONEncoder(), jsonDecoder: JSONDecoder())
             }
@@ -50,12 +72,12 @@ public final class PSQLConnection {
         public var coders: Coders
         
         public init(host: String,
-             port: Int = 5432,
-             username: String,
-             database: String? = nil,
-             password: String? = nil,
-             tlsConfiguration: TLSConfiguration? = nil,
-             coders: Coders = .foundation)
+                    port: Int = 5432,
+                    username: String,
+                    database: String? = nil,
+                    password: String? = nil,
+                    tlsConfiguration: TLSConfiguration? = nil,
+                    coders: Coders = .foundation)
         {
             self.connection = .unresolved(host: host, port: port)
             self.authentication = Authentication(username: username, password: password, database: database)
@@ -85,10 +107,12 @@ public final class PSQLConnection {
         return self.channel.eventLoop
     }
     
+    /// A future that will be succeeded once the connection is closed.
     public var closeFuture: EventLoopFuture<Void> {
         return self.channel.closeFuture
     }
     
+    /// A future that will be succeeded once the connection is closed.
     public var isClosed: Bool {
         return !self.channel.isActive
     }
@@ -184,7 +208,7 @@ public final class PSQLConnection {
         return promise.futureResult
     }
     
-    static func connect(
+    public static func connect(
         configuration: PSQLConnection.Configuration,
         logger: Logger,
         on eventLoop: EventLoop
