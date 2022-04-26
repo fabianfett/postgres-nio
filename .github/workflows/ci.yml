@@ -8,147 +8,147 @@ on:
       - "*"
 
 jobs:
-  linux-unit:
-    strategy:
-      fail-fast: false
-      matrix:
-        swift:
-          - swift:5.4
-          - swift:5.5
-          - swift:5.6
-          - swiftlang/swift:nightly-main
-        os:
-          - focal
-    container: ${{ format('{0}-{1}', matrix.swift, matrix.os) }}
-    runs-on: ubuntu-latest
-    env:
-      LOG_LEVEL: debug
-    steps:
-      - name: Check out package
-        uses: actions/checkout@v3
-      - name: Run unit tests with code coverage and Thread Sanitizer
-        run: swift test --enable-test-discovery --filter=^PostgresNIOTests --sanitize=thread --enable-code-coverage
-      - name: Submit coverage report to Codecov.io
-        uses: vapor/swift-codecov-action@v0.2
-        with:
-          cc_flags: 'unittests'
-          cc_env_vars: 'SWIFT_VERSION,SWIFT_PLATFORM,RUNNER_OS,RUNNER_ARCH'
-          cc_fail_ci_if_error: true
-          cc_verbose: true
-          cc_dry_run: false
+  # linux-unit:
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       swift:
+  #         - swift:5.4
+  #         - swift:5.5
+  #         - swift:5.6
+  #         - swiftlang/swift:nightly-main
+  #       os:
+  #         - focal
+  #   container: ${{ format('{0}-{1}', matrix.swift, matrix.os) }}
+  #   runs-on: ubuntu-latest
+  #   env:
+  #     LOG_LEVEL: debug
+  #   steps:
+  #     - name: Check out package
+  #       uses: actions/checkout@v3
+  #     - name: Run unit tests with code coverage and Thread Sanitizer
+  #       run: swift test --enable-test-discovery --filter=^PostgresNIOTests --sanitize=thread --enable-code-coverage
+  #     - name: Submit coverage report to Codecov.io
+  #       uses: vapor/swift-codecov-action@v0.2
+  #       with:
+  #         cc_flags: 'unittests'
+  #         cc_env_vars: 'SWIFT_VERSION,SWIFT_PLATFORM,RUNNER_OS,RUNNER_ARCH'
+  #         cc_fail_ci_if_error: true
+  #         cc_verbose: true
+  #         cc_dry_run: false
 
-  linux-integration-and-dependencies:
-    if: github.event_name == 'pull_request'
-    strategy:
-      fail-fast: false
-      matrix:
-        dbimage:
-          - postgres:14
-          - postgres:13
-          - postgres:11
-        include:
-          - dbimage: postgres:14
-            dbauth: scram-sha-256
-          - dbimage: postgres:13
-            dbauth: md5
-          - dbimage: postgres:11
-            dbauth: trust
-    container: swift:5.6-focal
-    runs-on: ubuntu-latest
-    env:
-      LOG_LEVEL: debug
-      # Unfortunately, fluent-postgres-driver details leak through here
-      POSTGRES_DB: 'test_database'
-      POSTGRES_DB_A: 'test_database'
-      POSTGRES_DB_B: 'test_database'
-      POSTGRES_USER: 'test_username'
-      POSTGRES_USER_A: 'test_username'
-      POSTGRES_USER_B: 'test_username'
-      POSTGRES_PASSWORD: 'test_password'
-      POSTGRES_PASSWORD_A: 'test_password'
-      POSTGRES_PASSWORD_B: 'test_password'
-      POSTGRES_HOSTNAME: 'psql-a'
-      POSTGRES_HOSTNAME_A: 'psql-a'
-      POSTGRES_HOSTNAME_B: 'psql-b'
-      POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
-    services:
-      psql-a:
-        image: ${{ matrix.dbimage }}
-        env:
-          POSTGRES_USER: 'test_username'
-          POSTGRES_DB: 'test_database'
-          POSTGRES_PASSWORD: 'test_password'
-          POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
-          POSTGRES_INITDB_ARGS: --auth-host=${{ matrix.dbauth }}
-      psql-b:
-        image: ${{ matrix.dbimage }}
-        env:
-          POSTGRES_USER: 'test_username'
-          POSTGRES_DB: 'test_database'
-          POSTGRES_PASSWORD: 'test_password'
-          POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
-          POSTGRES_INITDB_ARGS: --auth-host=${{ matrix.dbauth }}
-    steps:
-      - name: Check out package
-        uses: actions/checkout@v3
-        with: { path: 'postgres-nio' }
-      - name: Run integration tests
-        run: swift test --package-path postgres-nio --filter=^IntegrationTests
-      - name: Check out postgres-kit dependent
-        uses: actions/checkout@v3
-        with: { repository: 'vapor/postgres-kit', path: 'postgres-kit' }
-      - name: Check out fluent-postgres-driver dependent
-        uses: actions/checkout@v3
-        with: { repository: 'vapor/fluent-postgres-driver', path: 'fluent-postgres-driver' }
-      - name: Use local package in dependents
-        run: |
-          swift package --package-path postgres-kit edit postgres-nio --path postgres-nio
-          swift package --package-path fluent-postgres-driver edit postgres-nio --path postgres-nio
-      - name: Run postgres-kit tests
-        run: swift test --package-path postgres-kit
-      - name: Run fluent-postgres-driver tests
-        run: swift test --package-path fluent-postgres-driver
+  # linux-integration-and-dependencies:
+  #   if: github.event_name == 'pull_request'
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       dbimage:
+  #         - postgres:14
+  #         - postgres:13
+  #         - postgres:11
+  #       include:
+  #         - dbimage: postgres:14
+  #           dbauth: scram-sha-256
+  #         - dbimage: postgres:13
+  #           dbauth: md5
+  #         - dbimage: postgres:11
+  #           dbauth: trust
+  #   container: swift:5.6-focal
+  #   runs-on: ubuntu-latest
+  #   env:
+  #     LOG_LEVEL: debug
+  #     # Unfortunately, fluent-postgres-driver details leak through here
+  #     POSTGRES_DB: 'test_database'
+  #     POSTGRES_DB_A: 'test_database'
+  #     POSTGRES_DB_B: 'test_database'
+  #     POSTGRES_USER: 'test_username'
+  #     POSTGRES_USER_A: 'test_username'
+  #     POSTGRES_USER_B: 'test_username'
+  #     POSTGRES_PASSWORD: 'test_password'
+  #     POSTGRES_PASSWORD_A: 'test_password'
+  #     POSTGRES_PASSWORD_B: 'test_password'
+  #     POSTGRES_HOSTNAME: 'psql-a'
+  #     POSTGRES_HOSTNAME_A: 'psql-a'
+  #     POSTGRES_HOSTNAME_B: 'psql-b'
+  #     POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
+  #   services:
+  #     psql-a:
+  #       image: ${{ matrix.dbimage }}
+  #       env:
+  #         POSTGRES_USER: 'test_username'
+  #         POSTGRES_DB: 'test_database'
+  #         POSTGRES_PASSWORD: 'test_password'
+  #         POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
+  #         POSTGRES_INITDB_ARGS: --auth-host=${{ matrix.dbauth }}
+  #     psql-b:
+  #       image: ${{ matrix.dbimage }}
+  #       env:
+  #         POSTGRES_USER: 'test_username'
+  #         POSTGRES_DB: 'test_database'
+  #         POSTGRES_PASSWORD: 'test_password'
+  #         POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
+  #         POSTGRES_INITDB_ARGS: --auth-host=${{ matrix.dbauth }}
+  #   steps:
+  #     - name: Check out package
+  #       uses: actions/checkout@v3
+  #       with: { path: 'postgres-nio' }
+  #     - name: Run integration tests
+  #       run: swift test --package-path postgres-nio --filter=^IntegrationTests
+  #     - name: Check out postgres-kit dependent
+  #       uses: actions/checkout@v3
+  #       with: { repository: 'vapor/postgres-kit', path: 'postgres-kit' }
+  #     - name: Check out fluent-postgres-driver dependent
+  #       uses: actions/checkout@v3
+  #       with: { repository: 'vapor/fluent-postgres-driver', path: 'fluent-postgres-driver' }
+  #     - name: Use local package in dependents
+  #       run: |
+  #         swift package --package-path postgres-kit edit postgres-nio --path postgres-nio
+  #         swift package --package-path fluent-postgres-driver edit postgres-nio --path postgres-nio
+  #     - name: Run postgres-kit tests
+  #       run: swift test --package-path postgres-kit
+  #     - name: Run fluent-postgres-driver tests
+  #       run: swift test --package-path fluent-postgres-driver
 
-  macos-all:
-    if: github.event_name == 'pull_request'
-    strategy:
-      fail-fast: false
-      matrix:
-        dbimage:
-          # Only test the lastest version on macOS, let Linux do the rest
-          - postgresql@14
-        dbauth:
-          # Only test one auth method on macOS, Linux tests will cover the others
-          - scram-sha-256
-        xcode:
-          - latest-stable
-          #- latest
-    runs-on: macos-12
-    env:
-      LOG_LEVEL: debug
-      POSTGRES_HOSTNAME: 127.0.0.1
-      POSTGRES_USER: 'test_username'
-      POSTGRES_PASSWORD: 'test_password'
-      POSTGRES_DB: 'postgres'
-      POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
-    steps:
-      - name: Select latest available Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: ${{ matrix.xcode }}
-      - name: Install Postgres, setup DB and auth, and wait for server start
-        run: |
-          export PATH="$(brew --prefix)/opt/${{ matrix.dbimage }}/bin:$PATH" PGDATA=/tmp/vapor-postgres-test
-          (brew unlink postgresql || true) && brew install ${{ matrix.dbimage }} && brew link --force ${{ matrix.dbimage }}
-          initdb --locale=C --auth-host ${{ matrix.dbauth }} -U $POSTGRES_USER --pwfile=<(echo $POSTGRES_PASSWORD)
-          pg_ctl start --wait
-        timeout-minutes: 2
-      - name: Checkout code
-        uses: actions/checkout@v3
-      - name: Run all tests
-        run: |
-          swift test --enable-test-discovery -Xlinker -rpath \
-                -Xlinker $(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.5/macosx
+  # macos-all:
+  #   if: github.event_name == 'pull_request'
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       dbimage:
+  #         # Only test the lastest version on macOS, let Linux do the rest
+  #         - postgresql@14
+  #       dbauth:
+  #         # Only test one auth method on macOS, Linux tests will cover the others
+  #         - scram-sha-256
+  #       xcode:
+  #         - latest-stable
+  #         #- latest
+  #   runs-on: macos-12
+  #   env:
+  #     LOG_LEVEL: debug
+  #     POSTGRES_HOSTNAME: 127.0.0.1
+  #     POSTGRES_USER: 'test_username'
+  #     POSTGRES_PASSWORD: 'test_password'
+  #     POSTGRES_DB: 'postgres'
+  #     POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
+  #   steps:
+  #     - name: Select latest available Xcode
+  #       uses: maxim-lobanov/setup-xcode@v1
+  #       with:
+  #         xcode-version: ${{ matrix.xcode }}
+  #     - name: Install Postgres, setup DB and auth, and wait for server start
+  #       run: |
+  #         export PATH="$(brew --prefix)/opt/${{ matrix.dbimage }}/bin:$PATH" PGDATA=/tmp/vapor-postgres-test
+  #         (brew unlink postgresql || true) && brew install ${{ matrix.dbimage }} && brew link --force ${{ matrix.dbimage }}
+  #         initdb --locale=C --auth-host ${{ matrix.dbauth }} -U $POSTGRES_USER --pwfile=<(echo $POSTGRES_PASSWORD)
+  #         pg_ctl start --wait
+  #       timeout-minutes: 2
+  #     - name: Checkout code
+  #       uses: actions/checkout@v3
+  #     - name: Run all tests
+  #       run: |
+  #         swift test --enable-test-discovery -Xlinker -rpath \
+  #               -Xlinker $(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.5/macosx
 
   api-breakage:
     if: github.event_name == 'pull_request'
@@ -160,6 +160,8 @@ jobs:
       uses: actions/checkout@v3
       with:
         fetch-depth: 0
+    - name: Folder
+      run: pwd
     - name: API breaking changes
       run: |
         swift package diagnose-api-breaking-changes origin/${GITHUB_BASE_REF}
