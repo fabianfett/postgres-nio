@@ -14,6 +14,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.0.2"),
+        .package(url: "https://github.com/apple/swift-collections.git", from: "1.0.3"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.44.0"),
         .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.13.1"),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.22.1"),
@@ -25,6 +26,7 @@ let package = Package(
         .target(name: "PostgresNIO", dependencies: [
             .product(name: "Atomics", package: "swift-atomics"),
             .product(name: "Crypto", package: "swift-crypto"),
+            .product(name: "DequeModule", package: "swift-collections"),
             .product(name: "Logging", package: "swift-log"),
             .product(name: "Metrics", package: "swift-metrics"),
             .product(name: "NIO", package: "swift-nio"),

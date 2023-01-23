@@ -371,8 +371,13 @@ public final class PostgresConnection {
             return self.eventLoop.makeSucceededFuture(())
         }
 
-        self.channel.close(mode: .all, promise: nil)
-        return self.closeFuture
+        let promise = self.channel.eventLoop.makePromise(of: Void.self)
+        self.close(promise: promise)
+        return promise.futureResult
+    }
+
+    func close(promise: EventLoopPromise<Void>?) {
+        self.channel.close(mode: .all, promise: promise)
     }
 }
 
