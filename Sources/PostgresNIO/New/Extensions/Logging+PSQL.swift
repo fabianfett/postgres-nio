@@ -7,6 +7,7 @@ extension PSQLConnection {
     @usableFromInline
     enum LoggerMetaDataKey: String {
         case connectionID = "psql_connection_id"
+        case requestID = "psql_request_id"
         case query = "psql_query"
         case name = "psql_name"
         case error = "psql_error"

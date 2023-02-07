@@ -6,7 +6,11 @@ import Logging
 
 public protocol PostgresConnectionFactory {
 
-    func makeConnection(on eventLoop: any EventLoop, id: PostgresConnection.ID) -> EventLoopFuture<PostgresConnection>
+    func makeConnection(
+        on eventLoop: any EventLoop,
+        id: PostgresConnection.ID,
+        backgroundLogger: Logger
+    ) -> EventLoopFuture<PostgresConnection>
 
 }
 
@@ -29,7 +33,7 @@ public struct PostgresConnectionPoolConfiguration {
 
     public var idleTimeout: TimeAmount
 
-    init() {
+    public init() {
         self.minimumConnectionCount = System.coreCount
         self.maximumConnectionSoftLimit = System.coreCount
         self.maximumConnectionHardLimit = System.coreCount * 4
@@ -100,10 +104,18 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         return try await connection.query(query, logger: logger)
     }
 
+    public func withConnection<Result>(logger: Logger, _ closure: (PostgresConnection) async throws -> Result) async throws -> Result {
+        let connection = try await self.leaseConnection(logger: logger)
+
+        defer { self.releaseConnection(connection) }
+
+        return try await closure(connection)
+    }
+
     private func leaseConnection(logger: Logger) async throws -> PostgresConnection {
         let requestID = self.requestIDGenerator.next()
 
-        return try await withTaskCancellationHandler {
+        let connection = try await withTaskCancellationHandler {
             if Task.isCancelled {
                 throw CancellationError()
             }
@@ -117,13 +129,26 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 )
 
                 self.modifyStateAndRunActions { stateMachine in
-                    stateMachine.requestConnection(request)
+                    stateMachine.leaseConnection(request)
                 }
             }
         } onCancel: {
             self.modifyStateAndRunActions { stateMachine in
                 stateMachine.cancelRequest(id: requestID)
             }
+        }
+
+        logger.debug("Leased connection", metadata: [
+            PSQLLoggingMetadata.Key.connectionID.rawValue: "\(connection.id)",
+            PSQLLoggingMetadata.Key.requestID.rawValue: "\(requestID)",
+        ])
+
+        return connection
+    }
+
+    private func releaseConnection(_ connection: PostgresConnection) {
+        self.modifyStateAndRunActions { stateMachine in
+            stateMachine.releaseConnection(connection)
         }
     }
 
@@ -336,7 +361,15 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
     }
 
     private func makeConnection(for request: StateMachine.ConnectionRequest) {
-        self.factory.makeConnection(on: request.eventLoop, id: request.connectionID).whenComplete { result in
+        self.backgroundLogger.debug("Creating new connection", metadata: [
+            .connectionID: "\(request.connectionID)",
+        ])
+
+        self.factory.makeConnection(
+            on: request.eventLoop,
+            id: request.connectionID,
+            backgroundLogger: self.backgroundLogger
+        ).whenComplete { result in
             switch result {
             case .success(let connection):
                 self.connectionEstablished(connection)

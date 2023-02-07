@@ -174,7 +174,8 @@ struct PoolStateMachine<
         return request
     }
 
-    mutating func requestConnection(_ request: Request) -> Action {
+    mutating func leaseConnection(_ request: Request) -> Action {
+        // check if the preferredEL has an idle connection
         if let preferredEL = request.preferredEventLoop {
             if let connection = self.connections[preferredEL.id]!.leaseConnection() {
                 return .init(
@@ -184,18 +185,8 @@ struct PoolStateMachine<
             }
         }
 
-        let breakIndex = self.connections.indices.randomElement()!
-
-        var index: Dictionary<EventLoopID, EventLoopConnections>.Index
-
-        repeat {
-            let nextIndex = self.connections.index(after: breakIndex)
-            if nextIndex == self.connections.endIndex {
-                index = self.connections.startIndex
-            } else {
-                index = nextIndex
-            }
-
+        // check if any other EL has an idle connection
+        for index in RandomStartIndexIterator(self.connections) {
             var (key, connections) = self.connections[index]
             if let connection = connections.leaseConnection() {
                 self.connections[key] = connections
@@ -204,24 +195,28 @@ struct PoolStateMachine<
                     connection: .cancelPingTimer(connection.id)
                 )
             }
-        } while index != breakIndex
+        }
 
         // we tried everything. there is no connection available. now we must check, if and where we
         // can create further connections. but first we must enqueue the new request
 
+        fatalError()
+
         self.requestQueue.queue(request)
 
-        if let preferredEL = request.preferredEventLoop {
-            if let connection = self.connections[preferredEL.id]!.createNewConnection() {
+//        if let preferredEL = request.preferredEventLoop {
+//            if let connection = self.connections[preferredEL.id]!.createNewConnection() {
+//
+//                return .init(
+//                    request: .none,
+//                    connection: .createConnection(connection)
+//                )
+//            }
+//        }
+    }
 
-                return .init(
-                    request: .none,
-                    connection: .createConnection(connection)
-                )
-            }
-        }
-
-
+    mutating func releaseConnection(_ connection: Connection) -> Action {
+        fatalError()
     }
 
     mutating func cancelRequest(id: RequestID) -> Action {
@@ -339,6 +334,38 @@ struct EventLoopID: Hashable {
 
 extension EventLoop {
     var id: EventLoopID { .init(self) }
+}
+
+struct RandomStartIndexIterator<Collection: Swift.Collection>: Sequence, IteratorProtocol {
+    private let collection: Collection
+    private let startIndex: Collection.Index?
+    private var index: Collection.Index?
+
+    init(_ collection: Collection) {
+        self.collection = collection
+        self.startIndex = collection.indices.randomElement()
+        self.index = self.startIndex
+    }
+
+    mutating func next() -> Collection.Index? {
+        guard let index = self.index else { return nil }
+        defer {
+            let nextIndex = self.collection.index(after: index)
+            if nextIndex == self.collection.endIndex {
+                self.index = self.collection.startIndex
+            } else {
+                self.index = nextIndex
+            }
+            if self.index == self.startIndex {
+                self.index = nil
+            }
+        }
+        return index
+    }
+
+    func makeIterator() -> RandomStartIndexIterator<Collection> {
+        self
+    }
 }
 
 #endif

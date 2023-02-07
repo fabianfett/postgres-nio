@@ -46,5 +46,8 @@ let package = Package(
             .target(name: "PostgresNIO"),
             .product(name: "NIOTestUtils", package: "swift-nio"),
         ]),
+        .executableTarget(name: "PoolDemo", dependencies: [
+            .target(name: "PostgresNIO"),
+        ])
     ]
 )
