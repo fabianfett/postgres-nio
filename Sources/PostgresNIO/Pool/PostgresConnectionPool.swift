@@ -123,7 +123,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<PostgresConnection, any Error>) in
                 let request = Request(
                     id: requestID,
-                    deadline: .now() + .seconds(5),
+                    deadline: .now() + .seconds(60),
                     continuation: continuation,
                     preferredEventLoop: nil
                 )
@@ -138,7 +138,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             }
         }
 
-        logger.debug("Leased connection", metadata: [
+        logger.debug("leased connection", metadata: [
             PSQLLoggingMetadata.Key.connectionID.rawValue: "\(connection.id)",
             PSQLLoggingMetadata.Key.requestID.rawValue: "\(requestID)",
         ])
@@ -403,14 +403,18 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
     }
 
     private func connectionEstablished(_ connection: PostgresConnection) {
-        self.backgroundLogger.debug("Connection established", metadata: [.connectionID: "\(connection.id)"])
+        self.backgroundLogger.debug("Connection established", metadata: [
+            .connectionID: "\(connection.id)"
+        ])
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.connectionEstablished(connection)
         }
     }
 
     private func connectionEstablishFailed(_ error: any Error, for request: StateMachine.ConnectionRequest) {
-        self.backgroundLogger.debug("Connection creation failed", metadata: [.connectionID: "\(request.connectionID)", .error: "\(error)"])
+        self.backgroundLogger.debug("Connection creation failed", metadata: [
+            .connectionID: "\(request.connectionID)", .error: "\(error)"
+        ])
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.connectionEstablishFailed(error, for: request)
         }
@@ -444,7 +448,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
 
     private func schedulePingTimerForConnection(_ connectionID: PostgresConnection.ID, on eventLoop: any EventLoop) {
         self.backgroundLogger.trace("Schedule connection ping timer", metadata: [
-            "ahc-connection-id": "\(connectionID)",
+            .connectionID: "\(connectionID)",
         ])
         let scheduled = eventLoop.scheduleTask(in: self.configuration.pingFrequency) {
             // there might be a race between a cancelTimer call and the triggering
@@ -464,7 +468,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
 
     private func cancelPingTimerForConnection(_ connectionID: PostgresConnection.ID) {
         self.backgroundLogger.trace("Cancel connection ping timer", metadata: [
-            "ahc-connection-id": "\(connectionID)",
+            .connectionID: "\(connectionID)",
         ])
         guard let cancelTimer = self._pingTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have an idle timer for connection \(connectionID) at this point.")
@@ -474,7 +478,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
 
     private func scheduleIdleTimeoutTimerForConnection(_ connectionID: PostgresConnection.ID, on eventLoop: any EventLoop) {
         self.backgroundLogger.trace("Schedule idle connection timeout timer", metadata: [
-            "ahc-connection-id": "\(connectionID)",
+            .connectionID: "\(connectionID)",
         ])
         let scheduled = eventLoop.scheduleTask(in: self.configuration.idleTimeout) {
             // there might be a race between a cancelTimer call and the triggering
@@ -488,13 +492,13 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             }
         }
 
-        assert(self._pingTimer[connectionID] == nil)
-        self._pingTimer[connectionID] = scheduled
+        assert(self._idleTimer[connectionID] == nil)
+        self._idleTimer[connectionID] = scheduled
     }
 
     private func cancelIdleTimeoutTimerForConnection(_ connectionID: PostgresConnection.ID) {
         self.backgroundLogger.trace("Cancel idle connection timeout", metadata: [
-            "ahc-connection-id": "\(connectionID)",
+            .connectionID: "\(connectionID)",
         ])
         guard let cancelTimer = self._idleTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have an idle timer for connection \(connectionID) at this point.")
@@ -508,7 +512,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         on eventLoop: EventLoop
     ) {
         self.backgroundLogger.trace("Schedule connection creation backoff timer", metadata: [
-            "ahc-connection-id": "\(connectionID)",
+            .connectionID: "\(connectionID)",
         ])
 
         let scheduled = eventLoop.scheduleTask(in: timeAmount) {

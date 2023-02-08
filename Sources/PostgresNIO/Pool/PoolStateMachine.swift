@@ -188,14 +188,14 @@ struct PoolStateMachine<
             }
         }
 
-        var startingOrBackingOff: UInt16 = 0
+        var soonAvailable: UInt16 = 0
 
         // check if any other EL has an idle connection
         for index in RandomStartIndexIterator(self.connections) {
             var (key, connections) = self.connections[index]
-            switch connections.leaseConnectionOrReturnStartingCount() {
+            switch connections.leaseConnectionOrSoonAvailableConnectionCount() {
             case .startingCount(let count):
-                startingOrBackingOff += count
+                soonAvailable += count
             case .leasedConnection(let connection):
                 self.connections[key] = connections
                 return .init(
@@ -210,24 +210,65 @@ struct PoolStateMachine<
 
         self.requestQueue.queue(request)
 
-        if startingOrBackingOff >= self.requestQueue.count {
+        let requestAction: RequestAction = .scheduleRequestTimeout(for: request, on: request.preferredEventLoop ?? self.eventLoopGroup.any())
+
+        if soonAvailable >= self.requestQueue.count {
+            // if more connections will be soon available then we have waiters, we don't need to
+            // create further new connections.
             return .init(
-                request: .scheduleRequestTimeout(for: request, on: request.preferredEventLoop ?? self.eventLoopGroup.any()),
+                request: requestAction,
                 connection: .none
             )
         }
 
-        fatalError()
+        // create new demand connection
 
-//        if let preferredEL = request.preferredEventLoop {
-//            if let connection = self.connections[preferredEL.id]!.createNewConnection() {
-//
-//                return .init(
-//                    request: .none,
-//                    connection: .createConnection(connection)
-//                )
-//            }
-//        }
+        if let preferredEL = request.preferredEventLoop {
+            if let request = self.connections[preferredEL.id]!.createNewDemandConnectionIfPossible() {
+                return .init(
+                    request: requestAction,
+                    connection: .createConnection(request)
+                )
+            }
+        }
+
+        // check if any other EL has an idle connection
+        for index in RandomStartIndexIterator(self.connections) {
+            var (key, connections) = self.connections[index]
+            if let request = connections.createNewDemandConnectionIfPossible() {
+                self.connections[key] = connections
+                return .init(
+                    request: requestAction,
+                    connection: .createConnection(request)
+                )
+            }
+        }
+
+        // create new overflow connections
+
+        if let preferredEL = request.preferredEventLoop {
+            if let request = self.connections[preferredEL.id]!.createNewOverflowConnectionIfPossible() {
+                return .init(
+                    request: requestAction,
+                    connection: .createConnection(request)
+                )
+            }
+        }
+
+        // check if any other EL has an idle connection
+        for index in RandomStartIndexIterator(self.connections) {
+            var (key, connections) = self.connections[index]
+            if let request = connections.createNewOverflowConnectionIfPossible() {
+                self.connections[key] = connections
+                return .init(
+                    request: requestAction,
+                    connection: .createConnection(request)
+                )
+            }
+        }
+
+        // no new connections allowed:
+        return .init(request: requestAction, connection: .none)
     }
 
     mutating func releaseConnection(_ connection: Connection) -> Action {

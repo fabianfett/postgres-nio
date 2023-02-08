@@ -10,17 +10,17 @@ enum Server {
         mlogger.logLevel = .debug
         let logger = mlogger
 
-        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 4)
 
         var poolConfig = PostgresConnectionPoolConfiguration()
-        poolConfig.minimumConnectionCount = 4
-        poolConfig.maximumConnectionSoftLimit = 8
-        poolConfig.maximumConnectionHardLimit = 12
+        poolConfig.minimumConnectionCount = 4*4
+        poolConfig.maximumConnectionSoftLimit = 8*4
+        poolConfig.maximumConnectionHardLimit = 12*4
         poolConfig.pingFrequency = .seconds(5)
 
         let connectionConfig = PostgresConnection.Configuration(
-            connection: .init(host: "127.0.0.1"),
-            authentication: .init(username: "test_username", database: "test_database", password: "test_password"),
+            connection: .init(host: "postgres-nio-tests.vsl"),
+            authentication: .init(username: "postgres", database: "postgres", password: "password"),
             tls: .disable
         )
         let factory = Factory(configuration: connectionConfig)
@@ -40,7 +40,7 @@ enum Server {
 //        }
 
         await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<4 {
+            for _ in 0..<200 {
                 group.addTask {
                     try await pool.withConnection(logger: logger) { connection in
                         let rows = try await connection.query("SELECT 1", logger: logger)
@@ -52,7 +52,7 @@ enum Server {
             }
         }
 
-        try await ContinuousClock().sleep(until: .now + .seconds(30))
+//        try await ContinuousClock().sleep(until: .now + .seconds(30))
 
         try await pool.gracefulShutdown()
     }

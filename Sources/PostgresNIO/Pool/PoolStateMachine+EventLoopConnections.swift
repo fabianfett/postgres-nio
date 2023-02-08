@@ -29,81 +29,18 @@ extension PoolStateMachine {
 
         private var state: State
 
-        var isConnecting: Bool {
-            switch self.state {
-            case .starting:
-                return true
-            case .backingOff, .closing, .closed, .idle, .leased, .pingpong:
-                return false
-            }
-        }
-
-        var isBackingOff: Bool {
-            switch self.state {
-            case .backingOff:
-                return true
-            case .starting, .closing, .closed, .idle, .leased, .pingpong:
-                return false
-            }
+        init(id: Connection.ID) {
+            self.id = id
+            self.state = .starting
         }
 
         var isIdle: Bool {
             switch self.state {
             case .idle:
                 return true
-            case .backingOff, .starting, .leased, .closing, .closed, .pingpong:
+            case .backingOff, .starting, .closed, .closing, .leased, .pingpong:
                 return false
             }
-        }
-
-        var canOrWillBeAbleToExecuteRequests: Bool {
-            switch self.state {
-            case .leased, .backingOff, .idle, .starting, .pingpong:
-                return true
-            case .closing, .closed:
-                return false
-            }
-        }
-
-        var isLeased: Bool {
-            switch self.state {
-            case .leased:
-                return true
-            case .backingOff, .starting, .idle, .closed, .closing, .pingpong:
-                return false
-            }
-        }
-
-        var isActive: Bool {
-            switch self.state {
-            case .leased, .idle, .pingpong:
-                return true
-            case .backingOff, .starting, .closed, .closing:
-                return false
-            }
-        }
-
-        var isClosed: Bool {
-            switch self.state {
-            case .closed:
-                return true
-            case .backingOff, .starting, .closing, .leased, .idle, .pingpong:
-                return false
-            }
-        }
-
-        var idleSince: NIODeadline? {
-            switch self.state {
-            case .idle(_, since: let idleSince), .pingpong(_, since: let idleSince):
-                return idleSince
-            case .backingOff, .starting, .leased, .closed, .closing:
-                return nil
-            }
-        }
-
-        init(id: Connection.ID) {
-            self.id = id
-            self.state = .starting
         }
 
         mutating func connected(_ connection: Connection) {
@@ -183,12 +120,16 @@ extension PoolStateMachine {
             var pingpong: UInt16 = 0
             var connecting: UInt16 = 0
             var backingOff: UInt16 = 0
+            var closing: UInt16 = 0
 
-            var connectingOrBackingOff: UInt16 {
-                self.connecting + self.backingOff
+            var soonAvailable: UInt16 {
+                self.connecting + self.backingOff + self.pingpong
+            }
+
+            var active: UInt16 {
+                self.idle + self.leased + self.pingpong + self.connecting + self.backingOff
             }
         }
-
 
         let eventLoop: any EventLoop
 
@@ -229,12 +170,7 @@ extension PoolStateMachine {
         }
 
         var canGrow: Bool {
-            self.connections.count < self.maximumConcurrentConnectionHardLimit
-        }
-
-        /// Is there at least one connection that is able to run requests
-        var hasActiveConnections: Bool {
-            self.connections.contains(where: { $0.isActive })
+            self.stats.active < self.maximumConcurrentConnectionHardLimit
         }
 
         // MARK: - Mutations -
@@ -262,14 +198,8 @@ extension PoolStateMachine {
         }
 
         mutating func refillConnections(_ requests: inout [ConnectionRequest]) {
-            var existingConnections = 0
-            for connection in self.connections {
-                if connection.canOrWillBeAbleToExecuteRequests {
-                    existingConnections += 0
-                }
-            }
-
-            let missingConnection = self.minimumConcurrentConnections - existingConnections
+            let existingConnections = self.stats.soonAvailable
+            let missingConnection = self.minimumConcurrentConnections - Int(existingConnections)
             guard missingConnection > 0 else {
                 return
             }
@@ -281,7 +211,23 @@ extension PoolStateMachine {
 
         // MARK: Connection creation
 
-        mutating func createNewConnection() -> ConnectionRequest {
+        mutating func createNewDemandConnectionIfPossible() -> ConnectionRequest? {
+            precondition(self.minimumConcurrentConnections <= self.stats.active)
+            guard self.maximumConcurrentConnectionSoftLimit > self.stats.active else {
+                return nil
+            }
+            return self.createNewConnection()
+        }
+
+        mutating func createNewOverflowConnectionIfPossible() -> ConnectionRequest? {
+            precondition(self.maximumConcurrentConnectionSoftLimit <= self.stats.active)
+            guard self.maximumConcurrentConnectionHardLimit > self.stats.active else {
+                return nil
+            }
+            return self.createNewConnection()
+        }
+
+        private mutating func createNewConnection() -> ConnectionRequest {
             precondition(self.canGrow)
             self.stats.connecting += 1
             let connectionID = self.generator.next()
@@ -333,10 +279,16 @@ extension PoolStateMachine {
         ///
         /// - Returns: A connection to execute a request on.
         mutating func leaseConnection() -> Connection? {
-            guard let index = self.findIdleConnection() else {
+            if self.stats.idle == 0 {
                 return nil
             }
 
+            guard let index = self.findIdleConnection() else {
+                preconditionFailure("Stats and actual count are of.")
+            }
+
+            self.stats.idle -= 1
+            self.stats.leased += 1
             return self.connections[index].lease()
         }
 
@@ -345,15 +297,24 @@ extension PoolStateMachine {
             case startingCount(UInt16)
         }
 
-        mutating func leaseConnectionOrReturnStartingCount() -> LeasedConnectionOrStartingCount {
+        mutating func leaseConnectionOrSoonAvailableConnectionCount() -> LeasedConnectionOrStartingCount {
+            if self.stats.idle == 0 {
+                return .startingCount(self.stats.soonAvailable)
+            }
+
             if let index = self.findIdleConnection() {
+                self.stats.idle -= 1
+                self.stats.leased += 1
                 return .leasedConnection(self.connections[index].lease())
             }
-            return .startingCount(self.stats.connectingOrBackingOff)
+
+            preconditionFailure("Stats and actual count are of.")
         }
 
         mutating func leaseConnection(at index: Int) -> Connection {
-            self.connections[index].lease()
+            self.stats.idle -= 1
+            self.stats.leased += 1
+            return self.connections[index].lease()
         }
 
         func parkConnection(at index: Int) -> Connection.ID {
@@ -373,6 +334,9 @@ extension PoolStateMachine {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
                 preconditionFailure("A connection that we don't know was released? Something is very wrong...")
             }
+
+            self.stats.idle += 1
+            self.stats.leased -= 1
 
             self.connections[index].release()
             let context = self.generateIdleConnectionContextForConnection(at: index)
@@ -407,6 +371,8 @@ extension PoolStateMachine {
 
         /// Closes the connection at the given index.
         mutating func closeConnection(at index: Int) -> Connection {
+            self.stats.idle -= 1
+            self.stats.closing += 1
             return self.connections[index].close()
         }
 
