@@ -56,6 +56,10 @@ extension PoolStateMachine {
             self.requests.count
         }
 
+        var isEmpty: Bool {
+            self.count == 0
+        }
+
         init(eventLoopGroup: any EventLoopGroup) {
             self.generalPurposeQueue = .init(minimumCapacity: 128)
             self.eventLoopQueues = [:]
@@ -90,6 +94,7 @@ extension PoolStateMachine {
                         // there right away.
                         self.eventLoopQueues[preferredEL.id]!.pop(id: requestID)
                     }
+                    return request
                 }
             }
 

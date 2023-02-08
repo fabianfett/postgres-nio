@@ -7,6 +7,10 @@ protocol PSQLChannelHandlerNotificationDelegate: AnyObject {
     func notificationReceived(_: PostgresBackendMessage.NotificationResponse)
 }
 
+protocol TaskDoneDelegate {
+    func taskIsDone(task: PSQLTask)
+}
+
 final class PostgresChannelHandler: ChannelDuplexHandler {
     typealias OutboundIn = PSQLTask
     typealias InboundIn = ByteBuffer
@@ -324,7 +328,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
             self.notificationDelegate?.notificationReceived(notification)
         }
     }
-    
+
     // MARK: - Private Methods -
     
     private func connected(context: ChannelHandlerContext) {

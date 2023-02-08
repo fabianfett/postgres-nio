@@ -147,6 +147,10 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
     }
 
     private func releaseConnection(_ connection: PostgresConnection) {
+        self.backgroundLogger.debug("connection released", metadata: [
+            PSQLLoggingMetadata.Key.connectionID.rawValue: "\(connection.id)",
+        ])
+
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.releaseConnection(connection)
         }
@@ -168,6 +172,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             enum Unlocked {
                 case createConnection(StateMachine.ConnectionRequest)
                 case closeConnection(PostgresConnection)
+                case runPingPong(PostgresConnection)
                 case none
             }
 
@@ -254,6 +259,8 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 self.locked.connection = .cancelPingAndIdleTimeoutTimer(connectionID)
             case .cancelIdleTimeoutTimer(let connectionID):
                 self.locked.connection = .cancelIdleTimeoutTimer(connectionID)
+            case .runPingPong(let connection):
+                self.unlocked.connection = .runPingPong(connection)
             case .none:
                 break
             }
@@ -302,8 +309,6 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
 
         case .none:
             break
-
-
         }
     }
 
@@ -334,13 +339,31 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             self.makeConnection(for: connectionRequest)
 
         case .closeConnection(let connection):
-            self.backgroundLogger.trace("close connection", metadata: [
-                "ahc-connection-id": "\(connection.id)",
+            self.backgroundLogger.debug("close connection", metadata: [
+                PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
             ])
 
             // we are not interested in the close promise... The connection will inform us about its
             // close anyway.
             connection.close(promise: nil)
+
+        case .runPingPong(let connection):
+            self.backgroundLogger.debug("run ping pong", metadata: [
+                PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
+            ])
+
+            connection.query(.init(unsafeSQL: self.configuration.pingQuery), logger: self.backgroundLogger).whenComplete { result in
+                switch result {
+                case .success:
+                    self.modifyStateAndRunActions { stateMachine in
+                        stateMachine.connectionPingPongDone(connection)
+                    }
+                case .failure(let error):
+                    self.modifyStateAndRunActions { stateMachine in
+                        stateMachine.connectionClosed(connection)
+                    }
+                }
+            }
 
         case .none:
             break
@@ -429,7 +452,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             self.modifyStateAndRunActions { stateMachine in
                 if self._pingTimer.removeValue(forKey: connectionID) != nil {
                     // The timer still exists. State Machines assumes it is alive
-                    return stateMachine.connectionPingTimerTriggered(connectionID)
+                    return stateMachine.connectionPingTimerTriggered(connectionID, on: eventLoop)
                 }
                 return .none()
             }
@@ -459,7 +482,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             self.modifyStateAndRunActions { stateMachine in
                 if self._idleTimer.removeValue(forKey: connectionID) != nil {
                     // The timer still exists. State Machines assumes it is alive
-                    return stateMachine.connectionPingTimerTriggered(connectionID)
+                    return stateMachine.connectionIdleTimerTriggered(connectionID, on: eventLoop)
                 }
                 return .none()
             }

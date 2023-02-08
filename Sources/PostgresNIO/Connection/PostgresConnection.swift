@@ -7,6 +7,10 @@ import NIOSSL
 import Logging
 import NIOPosix
 
+protocol ConnectionReleaseDelegate {
+    func releaseConnection(_ connection: PostgresConnection)
+}
+
 /// A Postgres connection. Use it to run queries against a Postgres server.
 public final class PostgresConnection {
     /// A Postgres connection ID

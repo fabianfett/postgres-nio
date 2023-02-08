@@ -6,8 +6,9 @@ import Logging
 @available(macOS 13, *)
 enum Server {
     static func main() async throws {
-        var logger = Logger(label: "psql")
-        logger.logLevel = .debug
+        var mlogger = Logger(label: "psql")
+        mlogger.logLevel = .debug
+        let logger = mlogger
 
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
@@ -15,6 +16,7 @@ enum Server {
         poolConfig.minimumConnectionCount = 4
         poolConfig.maximumConnectionSoftLimit = 8
         poolConfig.maximumConnectionHardLimit = 12
+        poolConfig.pingFrequency = .seconds(5)
 
         let connectionConfig = PostgresConnection.Configuration(
             connection: .init(host: "127.0.0.1"),
@@ -27,15 +29,30 @@ enum Server {
             configuration: poolConfig,
             factory: factory,
             eventLoopGroup: eventLoopGroup,
-            backgroundLogger: logger
+            backgroundLogger: mlogger
         )
 
-        try await ContinuousClock().sleep(until: .now + .seconds(10))
+//        try await ContinuousClock().sleep(until: .now + .seconds(10))
 
-        let rows = try await pool.query("SELECT 1", deadline: .now + .seconds(12), clock: .continuous, logger: logger)
-        for try await row in rows {
-            logger.info("Row received")
+//        let rows = try await pool.query("SELECT 1", deadline: .now + .seconds(12), clock: .continuous, logger: mlogger)
+//        for try await row in rows {
+//            mlogger.info("Row received")
+//        }
+
+        await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 {
+                group.addTask {
+                    try await pool.withConnection(logger: logger) { connection in
+                        let rows = try await connection.query("SELECT 1", logger: logger)
+                        for try await row in rows {
+//                            logger.info("Row received")
+                        }
+                    }
+                }
+            }
         }
+
+        try await ContinuousClock().sleep(until: .now + .seconds(30))
 
         try await pool.gracefulShutdown()
     }

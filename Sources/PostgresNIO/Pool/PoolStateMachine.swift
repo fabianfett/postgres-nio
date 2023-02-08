@@ -57,6 +57,7 @@ struct PoolStateMachine<
 
         case schedulePingTimer(Connection.ID, on: EventLoop)
         case cancelPingTimer(Connection.ID)
+        case runPingPong(Connection)
 
         case schedulePingAndIdleTimeoutTimer(Connection.ID, on: EventLoop)
         case cancelPingAndIdleTimeoutTimer(Connection.ID)
@@ -92,6 +93,7 @@ struct PoolStateMachine<
     private let configuration: PostgresConnectionPoolConfiguration
     private let generator: ConnectionIDGenerator
     private let eventLoops: [any EventLoop]
+    private let eventLoopGroup: any EventLoopGroup
 
     private var connections: [EventLoopID: EventLoopConnections]
     private var requestQueue: RequestQueue
@@ -109,6 +111,7 @@ struct PoolStateMachine<
         self.configuration = configuration
         self.generator = generator
         self.eventLoops = Array(eventLoopGroup.makeIterator())
+        self.eventLoopGroup = eventLoopGroup
         self.connections = [:]
         self.connections.reserveCapacity(self.eventLoops.count)
         self.requestQueue = .init(eventLoopGroup: eventLoopGroup)
@@ -185,10 +188,15 @@ struct PoolStateMachine<
             }
         }
 
+        var startingOrBackingOff: UInt16 = 0
+
         // check if any other EL has an idle connection
         for index in RandomStartIndexIterator(self.connections) {
             var (key, connections) = self.connections[index]
-            if let connection = connections.leaseConnection() {
+            switch connections.leaseConnectionOrReturnStartingCount() {
+            case .startingCount(let count):
+                startingOrBackingOff += count
+            case .leasedConnection(let connection):
                 self.connections[key] = connections
                 return .init(
                     request: .leaseConnection(request, connection, cancelTimeout: false),
@@ -200,9 +208,16 @@ struct PoolStateMachine<
         // we tried everything. there is no connection available. now we must check, if and where we
         // can create further connections. but first we must enqueue the new request
 
-        fatalError()
-
         self.requestQueue.queue(request)
+
+        if startingOrBackingOff >= self.requestQueue.count {
+            return .init(
+                request: .scheduleRequestTimeout(for: request, on: request.preferredEventLoop ?? self.eventLoopGroup.any()),
+                connection: .none
+            )
+        }
+
+        fatalError()
 
 //        if let preferredEL = request.preferredEventLoop {
 //            if let connection = self.connections[preferredEL.id]!.createNewConnection() {
@@ -216,22 +231,10 @@ struct PoolStateMachine<
     }
 
     mutating func releaseConnection(_ connection: Connection) -> Action {
-        fatalError()
-    }
-
-    mutating func cancelRequest(id: RequestID) -> Action {
-        fatalError()
-    }
-
-    mutating func timeoutRequest(id: RequestID) -> Action {
-        fatalError()
-    }
-
-    mutating func connectionEstablished(_ connection: Connection) -> Action {
         let eventLoopID = EventLoopID(connection.eventLoop)
-        let (index, idleContext) = self.connections[eventLoopID]!.newConnectionEstablished(connection)
+        let (index, idleContext) = self.connections[eventLoopID]!.releaseConnection(connection.id)
 
-        if let request = self.requestQueue.pop(for: .init(connection.eventLoop)) {
+        if let request = self.requestQueue.pop(for: eventLoopID) {
             let connection = self.connections[eventLoopID]!.leaseConnection(at: index)
             return .init(
                 request: .leaseConnection(request, connection, cancelTimeout: true),
@@ -250,6 +253,22 @@ struct PoolStateMachine<
             let connection = self.connections[eventLoopID]!.closeConnection(at: index)
             return .init(request: .none, connection: .closeConnection(connection))
         }
+
+    }
+
+    mutating func cancelRequest(id: RequestID) -> Action {
+        fatalError()
+    }
+
+    mutating func timeoutRequest(id: RequestID) -> Action {
+        fatalError()
+    }
+
+    mutating func connectionEstablished(_ connection: Connection) -> Action {
+        let eventLoopID = EventLoopID(connection.eventLoop)
+        let (index, idleContext) = self.connections[eventLoopID]!.newConnectionEstablished(connection)
+
+        return self.handleIdleConnection(eventLoopID, index: index, idleContext: idleContext)
     }
 
     mutating func connectionEstablishFailed(_ error: any Error, for request: ConnectionRequest) -> Action {
@@ -266,16 +285,54 @@ struct PoolStateMachine<
         fatalError()
     }
 
-    mutating func connectionPingTimerTriggered(_ connectionID: ConnectionID) -> Action {
-        fatalError()
+    mutating func connectionPingTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
+        precondition(self.requestQueue.isEmpty)
+
+        let connection = self.connections[.init(eventLoop)]!.pingpong(connectionID)
+        return .init(request: .none, connection: .runPingPong(connection))
     }
 
-    mutating func connectionClosed() -> Action {
+    mutating func connectionPingPongDone(_ connection: Connection) -> Action {
+        let eventLoopID = EventLoopID(connection.eventLoop)
+        let (index, idleContext) = self.connections[eventLoopID]!.pingpongDone(connection.id)
+        return self.handleIdleConnection(eventLoopID, index: index, idleContext: idleContext)
+    }
+
+    mutating func connectionIdleTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
+        precondition(self.requestQueue.isEmpty)
+
+        let connection = self.connections[.init(eventLoop)]!.pingpong(connectionID)
+        return .init(request: .none, connection: .runPingPong(connection))
+    }
+
+    mutating func connectionClosed(_ connection: Connection) -> Action {
         fatalError()
     }
 
     mutating func shutdown() -> Action {
         fatalError()
+    }
+
+    private mutating func handleIdleConnection(_ eventLoopID: EventLoopID, index: Int, idleContext: EventLoopConnections.IdleConnectionContext) -> Action {
+        if let request = self.requestQueue.pop(for: eventLoopID) {
+            let connection = self.connections[eventLoopID]!.leaseConnection(at: index)
+            return .init(
+                request: .leaseConnection(request, connection, cancelTimeout: true),
+                connection: .none
+            )
+        }
+
+        switch idleContext.use {
+        case .persisted:
+            let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
+            return .init(request: .none, connection: .schedulePingTimer(connectionID, on: idleContext.eventLoop))
+        case .overflow:
+            let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
+            return .init(request: .none, connection: .schedulePingAndIdleTimeoutTimer(connectionID, on: idleContext.eventLoop))
+        case .oneof:
+            let connection = self.connections[eventLoopID]!.closeConnection(at: index)
+            return .init(request: .none, connection: .closeConnection(connection))
+        }
     }
 }
 

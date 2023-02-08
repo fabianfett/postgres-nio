@@ -1,6 +1,12 @@
 import Logging
 import NIOCore
 
+struct PSQLTaskBundle {
+    var task: PSQLTask
+
+    var delegate: TaskDoneDelegate?
+}
+
 enum PSQLTask {
     case extendedQuery(ExtendedQueryContext)
     case preparedStatement(PrepareStatementContext)

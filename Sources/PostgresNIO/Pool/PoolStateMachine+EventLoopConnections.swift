@@ -139,7 +139,19 @@ extension PoolStateMachine {
             switch self.state {
             case .leased(let connection):
                 self.state = .idle(connection, since: .now())
-            case .backingOff, .starting, .idle, .pingpong, .closing, .closed:
+            case .pingpong(let connection, let since):
+                self.state = .idle(connection, since: since)
+            case .backingOff, .starting, .idle, .closing, .closed:
+                preconditionFailure("Invalid state: \(self.state)")
+            }
+        }
+
+        mutating func pingpong() -> Connection {
+            switch self.state {
+            case .idle(let connection, let since):
+                self.state = .pingpong(connection, since: since)
+                return connection
+            case .backingOff, .starting, .leased, .pingpong, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -165,6 +177,19 @@ extension PoolStateMachine {
     }
 
     struct EventLoopConnections {
+        struct Stats {
+            var idle: UInt16 = 0
+            var leased: UInt16 = 0
+            var pingpong: UInt16 = 0
+            var connecting: UInt16 = 0
+            var backingOff: UInt16 = 0
+
+            var connectingOrBackingOff: UInt16 {
+                self.connecting + self.backingOff
+            }
+        }
+
+
         let eventLoop: any EventLoop
 
         /// The minimum number of connections
@@ -182,6 +207,8 @@ extension PoolStateMachine {
         /// The connections states
         private var connections: [ConnectionState]
 
+        private var stats = Stats()
+
         init(
             eventLoop: any EventLoop,
             generator: ConnectionIDGenerator,
@@ -195,24 +222,6 @@ extension PoolStateMachine {
             self.minimumConcurrentConnections = minimumConcurrentConnections
             self.maximumConcurrentConnectionSoftLimit = maximumConcurrentConnectionSoftLimit
             self.maximumConcurrentConnectionHardLimit = maximumConcurrentConnectionHardLimit
-        }
-
-        var stats: Stats {
-            var stats = Stats()
-            // all additions here can be unchecked, since we will have at max self.connections.count
-            // which itself is an Int. For this reason we will never overflow.
-            for connectionState in self.connections {
-                if connectionState.isConnecting {
-                    stats.connecting &+= 1
-                } else if connectionState.isBackingOff {
-                    stats.backingOff &+= 1
-                } else if connectionState.isLeased {
-                    stats.leased &+= 1
-                } else if connectionState.isIdle {
-                    stats.idle &+= 1
-                }
-            }
-            return stats
         }
 
         var isEmpty: Bool {
@@ -274,6 +283,7 @@ extension PoolStateMachine {
 
         mutating func createNewConnection() -> ConnectionRequest {
             precondition(self.canGrow)
+            self.stats.connecting += 1
             let connectionID = self.generator.next()
             let connection = ConnectionState(id: connectionID)
             self.connections.append(connection)
@@ -292,6 +302,8 @@ extension PoolStateMachine {
             guard let index = self.connections.firstIndex(where: { $0.id == connection.id }) else {
                 preconditionFailure("There is a new connection that we didn't request!")
             }
+            self.stats.connecting -= 1
+            self.stats.idle += 1
             self.connections[index].connected(connection)
             // TODO: If this is an overflow connection, but we are currently also creating a
             //       persisted connection, we might want to swap those.
@@ -308,6 +320,9 @@ extension PoolStateMachine {
                 preconditionFailure("We tried to create a new connection that we know nothing about?")
             }
 
+            self.stats.connecting -= 1
+            self.stats.backingOff += 1
+
             self.connections[index].failedToConnect()
             return self.eventLoop
         }
@@ -323,6 +338,18 @@ extension PoolStateMachine {
             }
 
             return self.connections[index].lease()
+        }
+
+        enum LeasedConnectionOrStartingCount {
+            case leasedConnection(Connection)
+            case startingCount(UInt16)
+        }
+
+        mutating func leaseConnectionOrReturnStartingCount() -> LeasedConnectionOrStartingCount {
+            if let index = self.findIdleConnection() {
+                return .leasedConnection(self.connections[index].lease())
+            }
+            return .startingCount(self.stats.connectingOrBackingOff)
         }
 
         mutating func leaseConnection(at index: Int) -> Connection {
@@ -346,6 +373,30 @@ extension PoolStateMachine {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
                 preconditionFailure("A connection that we don't know was released? Something is very wrong...")
             }
+
+            self.connections[index].release()
+            let context = self.generateIdleConnectionContextForConnection(at: index)
+            return (index, context)
+        }
+
+        mutating func pingpong(_ connectionID: Connection.ID) -> Connection {
+            guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
+                preconditionFailure("A connection that we don't know was released? Something is very wrong...")
+            }
+
+            self.stats.idle -= 1
+            self.stats.pingpong += 1
+
+            return self.connections[index].pingpong()
+        }
+
+        mutating func pingpongDone(_ connectionID: Connection.ID) -> (Int, IdleConnectionContext) {
+            guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
+                preconditionFailure("A connection that we don't know was released? Something is very wrong...")
+            }
+
+            self.stats.idle += 1
+            self.stats.pingpong -= 1
 
             self.connections[index].release()
             let context = self.generateIdleConnectionContextForConnection(at: index)
@@ -447,12 +498,7 @@ extension PoolStateMachine {
             return self.connections.firstIndex(where: { $0.isIdle })
         }
 
-        struct Stats {
-            var idle: Int = 0
-            var leased: Int = 0
-            var connecting: Int = 0
-            var backingOff: Int = 0
-        }
+
     }
 
 }
