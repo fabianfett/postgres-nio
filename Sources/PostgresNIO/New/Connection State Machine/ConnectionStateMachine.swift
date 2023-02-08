@@ -1119,6 +1119,9 @@ extension ConnectionStateMachine {
             preconditionFailure("Pure client error, that is thrown directly in PSQLRows")
         case .uncleanShutdown:
             return true
+        case .timeoutError, .poolClosed:
+            preconditionFailure("Pure pool error, that is thrown directly in Pool")
+
         }
     }
 

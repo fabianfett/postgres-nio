@@ -100,6 +100,18 @@ extension PoolStateMachine {
 
             return nil
         }
+
+        mutating func remove(_ requestID: RequestID) -> Request? {
+            self.requests.removeValue(forKey: requestID)
+        }
+
+        mutating func removeAll() -> [Request] {
+            let result = Array(self.requests.values)
+            self.requests.removeAll()
+            self.generalPurposeQueue.removeAll()
+            self.eventLoopQueues.removeAll()
+            return result
+        }
     }
 }
 #endif

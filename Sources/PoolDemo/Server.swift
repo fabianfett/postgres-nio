@@ -13,13 +13,14 @@ enum Server {
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 4)
 
         var poolConfig = PostgresConnectionPoolConfiguration()
-        poolConfig.minimumConnectionCount = 4*4
+        poolConfig.minimumConnectionCount = 0
         poolConfig.maximumConnectionSoftLimit = 8*4
         poolConfig.maximumConnectionHardLimit = 12*4
         poolConfig.pingFrequency = .seconds(5)
+        poolConfig.idleTimeout = .seconds(15)
 
         let connectionConfig = PostgresConnection.Configuration(
-            connection: .init(host: "postgres-nio-tests.vsl"),
+            connection: .init(host: "postgres-nio-tests.vs"),
             authentication: .init(username: "postgres", database: "postgres", password: "password"),
             tls: .disable
         )
@@ -40,21 +41,25 @@ enum Server {
 //        }
 
         await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<200 {
+            for _ in 0..<2 {
                 group.addTask {
-                    try await pool.withConnection(logger: logger) { connection in
-                        let rows = try await connection.query("SELECT 1", logger: logger)
-                        for try await row in rows {
-//                            logger.info("Row received")
+                    do {
+                        try await pool.withConnection(logger: logger) { connection in
+                            let rows = try await connection.query("SELECT 1", logger: logger)
+                            for try await row in rows {
+    //                            logger.info("Row received")
+                            }
                         }
+                    } catch {
+                        logger.error("Error", metadata: ["error": "\(error)"])
                     }
                 }
             }
         }
 
-//        try await ContinuousClock().sleep(until: .now + .seconds(30))
+        try await ContinuousClock().sleep(until: .now + .seconds(120))
 
-        try await pool.gracefulShutdown()
+        try await pool.shutdown()
     }
 }
 

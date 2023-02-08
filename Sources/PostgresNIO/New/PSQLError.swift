@@ -19,6 +19,9 @@ struct PSQLError: Error {
         case connectionClosed
         case connectionError(underlying: Error)
         case uncleanShutdown
+        case timeoutError
+
+        case poolClosed
 
         case casting(PostgresDecodingError)
     }
@@ -87,6 +90,14 @@ struct PSQLError: Error {
 
     static var uncleanShutdown: PSQLError {
         Self.init(.uncleanShutdown)
+    }
+
+    static var timeoutError: PSQLError {
+        Self.init(.timeoutError)
+    }
+
+    static var poolClosed: PSQLError {
+        Self.init(.poolClosed)
     }
 }
 

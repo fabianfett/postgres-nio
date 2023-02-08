@@ -123,7 +123,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<PostgresConnection, any Error>) in
                 let request = Request(
                     id: requestID,
-                    deadline: .now() + .seconds(60),
+                    deadline: .now() + .seconds(10),
                     continuation: continuation,
                     preferredEventLoop: nil
                 )
@@ -156,8 +156,17 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         }
     }
 
-    public func gracefulShutdown() async throws {
+    public func shutdown() async throws {
+        let promise = self.eventLoopGroup.any().makePromise(of: Void.self)
+        self.shutdown(promise: promise)
+        try await promise.futureResult.get()
+    }
 
+    public func shutdown(promise: EventLoopPromise<Void>?) {
+        let promise = promise ?? self.eventLoopGroup.any().makePromise(of: Void.self)
+        self.modifyStateAndRunActions { stateMachine in
+            stateMachine.forceShutdown(promise)
+        }
     }
 
     // MARK: - Private Methods -
@@ -172,7 +181,9 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             enum Unlocked {
                 case createConnection(StateMachine.ConnectionRequest)
                 case closeConnection(PostgresConnection)
+                case closeConnections([PostgresConnection])
                 case runPingPong(PostgresConnection)
+                case shutdownComplete(EventLoopPromise<Void>)
                 case none
             }
 
@@ -185,6 +196,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 case schedulePingAndIdleTimeoutTimer(PostgresConnection.ID, on: any EventLoop)
                 case cancelPingAndIdleTimeoutTimer(PostgresConnection.ID)
                 case cancelIdleTimeoutTimer(PostgresConnection.ID)
+                case cancelTimers(idle: [PostgresConnection.ID], pingPong: [PostgresConnection.ID], backoff: [PostgresConnection.ID])
                 case none
             }
         }
@@ -251,7 +263,10 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 self.locked.connection = .schedulePingTimer(connectionID, on: eventLoop)
             case .cancelPingTimer(let connectionID):
                 self.locked.connection = .cancelPingTimer(connectionID)
-            case .closeConnection(let connection):
+            case .closeConnection(let connection, let cancelPingPongTimer):
+                if cancelPingPongTimer {
+                    self.locked.connection = .cancelPingTimer(connection.id)
+                }
                 self.unlocked.connection = .closeConnection(connection)
             case .schedulePingAndIdleTimeoutTimer(let connectionID, on: let eventLoop):
                 self.locked.connection = .schedulePingAndIdleTimeoutTimer(connectionID, on: eventLoop)
@@ -261,8 +276,17 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 self.locked.connection = .cancelIdleTimeoutTimer(connectionID)
             case .runPingPong(let connection):
                 self.unlocked.connection = .runPingPong(connection)
+            case .shutdown(let shutdown):
+                let idleTimers = shutdown.connections.compactMap { $0.cancelIdleTimer ? $0.connection.id : nil }
+                let pingPongTimers = shutdown.connections.compactMap { $0.cancelPingPongTimer ? $0.connection.id : nil }
+                let backoffTimers = shutdown.backoffTimersToCancel
+                self.locked.connection = .cancelTimers(idle: idleTimers, pingPong: pingPongTimers, backoff: backoffTimers)
+                self.unlocked.connection = .closeConnections(shutdown.connections.map { $0.connection })
+            case .shutdownComplete(let promise):
+                self.unlocked.connection = .shutdownComplete(promise)
             case .none:
                 break
+
             }
         }
     }
@@ -307,6 +331,11 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 self.cancelConnectionStartBackoffTimer(connectionID)
             }
 
+        case .cancelTimers(let idleTimers, let pingPongTimers, let backoffTimers):
+            idleTimers.forEach { self.cancelIdleTimeoutTimerForConnection($0) }
+            pingPongTimers.forEach { self.cancelPingTimerForConnection($0) }
+            backoffTimers.forEach { self.cancelConnectionStartBackoffTimer($0) }
+
         case .none:
             break
         }
@@ -339,13 +368,10 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             self.makeConnection(for: connectionRequest)
 
         case .closeConnection(let connection):
-            self.backgroundLogger.debug("close connection", metadata: [
-                PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
-            ])
+            self.closeConnection(connection)
 
-            // we are not interested in the close promise... The connection will inform us about its
-            // close anyway.
-            connection.close(promise: nil)
+        case .closeConnections(let connections):
+            connections.forEach { self.closeConnection($0) }
 
         case .runPingPong(let connection):
             self.backgroundLogger.debug("run ping pong", metadata: [
@@ -364,6 +390,9 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                     }
                 }
             }
+
+        case .shutdownComplete(let promise):
+            promise.succeed(())
 
         case .none:
             break
@@ -396,6 +425,11 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             switch result {
             case .success(let connection):
                 self.connectionEstablished(connection)
+                connection.closeFuture.whenComplete { _ in
+                    self.modifyStateAndRunActions { stateMachine in
+                        stateMachine.connectionClosed(connection)
+                    }
+                }
             case .failure(let error):
                 self.connectionEstablishFailed(error, for: request)
             }
@@ -429,7 +463,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 if self._requestTimer.removeValue(forKey: requestID) != nil {
                     // The timer still exists. State Machines assumes it is alive. Inform state
                     // machine.
-                    return self._stateMachine.timeoutRequest(id: requestID)
+                    return stateMachine.timeoutRequest(id: requestID)
                 }
                 return .none()
             }
@@ -520,7 +554,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             self.modifyStateAndRunActions { stateMachine in
                 if self._backoffTimer.removeValue(forKey: connectionID) != nil {
                     // The timer still exists. State Machines assumes it is alive
-                    return stateMachine.connectionCreationBackoffDone(connectionID)
+                    return stateMachine.connectionCreationBackoffDone(connectionID, on: eventLoop)
                 }
                 return .none()
             }
@@ -537,7 +571,15 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         backoffTimer.cancel()
     }
 
+    private func closeConnection(_ connection: PostgresConnection) {
+        self.backgroundLogger.debug("close connection", metadata: [
+            PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
+        ])
 
+        // we are not interested in the close promise... The connection will inform us about its
+        // close anyway.
+        connection.close(promise: nil)
+    }
 }
 
 @available(macOS 13.0, iOS 16.0, *)

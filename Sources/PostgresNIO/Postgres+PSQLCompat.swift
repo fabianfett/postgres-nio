@@ -38,6 +38,8 @@ extension PSQLError {
             return castingError
         case .uncleanShutdown:
             return PostgresError.protocol("Unexpected connection close")
+        case .timeoutError, .poolClosed:
+            return self
         }
     }
 }

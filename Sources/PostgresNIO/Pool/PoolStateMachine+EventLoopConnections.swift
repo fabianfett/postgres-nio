@@ -43,6 +43,33 @@ extension PoolStateMachine {
             }
         }
 
+        var isLeased: Bool {
+            switch self.state {
+            case .leased:
+                return true
+            case .backingOff, .starting, .closed, .closing, .idle, .pingpong:
+                return false
+            }
+        }
+
+        var isIdleOrPingPonging: Bool {
+            switch self.state {
+            case .idle, .pingpong:
+                return true
+            case .backingOff, .starting, .closed, .closing, .leased:
+                return false
+            }
+        }
+
+        var isConnected: Bool {
+            switch self.state {
+            case .idle, .pingpong, .leased:
+                return true
+            case .backingOff, .starting, .closed, .closing:
+                return false
+            }
+        }
+
         mutating func connected(_ connection: Connection) {
             switch self.state {
             case .starting:
@@ -58,6 +85,15 @@ extension PoolStateMachine {
             case .starting:
                 self.state = .backingOff
             case .backingOff, .idle, .leased, .pingpong, .closing, .closed:
+                preconditionFailure("Invalid state: \(self.state)")
+            }
+        }
+
+        mutating func retryConnect() {
+            switch self.state {
+            case .backingOff:
+                self.state = .starting
+            case .starting, .idle, .leased, .pingpong, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -83,12 +119,14 @@ extension PoolStateMachine {
             }
         }
 
-        mutating func pingpong() -> Connection {
+        mutating func pingPongIfIdle() -> Connection? {
             switch self.state {
             case .idle(let connection, let since):
                 self.state = .pingpong(connection, since: since)
                 return connection
-            case .backingOff, .starting, .leased, .pingpong, .closing, .closed:
+            case .leased, .closed, .closing:
+                return nil
+            case .backingOff, .starting, .pingpong:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -103,11 +141,49 @@ extension PoolStateMachine {
             }
         }
 
+        mutating func closeIfIdle() -> (Connection, Bool)? {
+            switch self.state {
+            case .idle(let connection, since: _):
+                self.state = .closing(connection)
+                return (connection, true)
+            case .pingpong(let connection, since: _):
+                self.state = .closing(connection)
+                return (connection, false)
+            case .leased, .closed:
+                return nil
+            case .backingOff, .starting, .closing:
+                preconditionFailure("Invalid state: \(self.state)")
+            }
+        }
+
+        enum ShutdownAction {
+            case none
+            case close(Connection, wasIdle: Bool)
+            case cancelBackoff(ConnectionID)
+        }
+
+        mutating func shutdown() -> ShutdownAction {
+            switch self.state {
+            case .starting, .closing:
+                return .none
+            case .backingOff:
+                return .cancelBackoff(self.id)
+            case .idle(let connection, since: _):
+                self.state = .closing(connection)
+                return .close(connection, wasIdle: true)
+            case .leased(let connection), .pingpong(let connection, since: _):
+                self.state = .closing(connection)
+                return .close(connection, wasIdle: false)
+            case .closed:
+                preconditionFailure("Invalid state: \(self.state)")
+            }
+        }
+
         mutating func fail() {
             switch self.state {
-            case .starting, .backingOff, .idle, .leased, .pingpong, .closing:
+            case .idle, .leased, .pingpong, .closing:
                 self.state = .closed
-            case .closed:
+            case .starting, .backingOff, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -173,6 +249,10 @@ extension PoolStateMachine {
             self.stats.active < self.maximumConcurrentConnectionHardLimit
         }
 
+        var soonAvailable: UInt16 {
+            self.stats.soonAvailable
+        }
+
         // MARK: - Mutations -
 
         /// A connection's use. Is it persisted or an overflow connection?
@@ -189,6 +269,8 @@ extension PoolStateMachine {
             /// The connection's use. Either general purpose or for requests with `EventLoop`
             /// requirements.
             var use: ConnectionUse
+
+            var hasBecomeIdle: Bool
         }
 
         /// Information around the failed/closed connection.
@@ -253,7 +335,7 @@ extension PoolStateMachine {
             self.connections[index].connected(connection)
             // TODO: If this is an overflow connection, but we are currently also creating a
             //       persisted connection, we might want to swap those.
-            let context = self.generateIdleConnectionContextForConnection(at: index)
+            let context = self.generateIdleConnectionContextForConnection(at: index, hasBecomeIdle: true)
             return (index, context)
         }
 
@@ -271,6 +353,98 @@ extension PoolStateMachine {
 
             self.connections[index].failedToConnect()
             return self.eventLoop
+        }
+
+        enum BackoffDoneAction {
+            case createConnection(ConnectionRequest)
+            case cancelIdleTimeoutTimer(ConnectionID)
+            case none
+        }
+
+        mutating func backoffDone(_ connectionID: Connection.ID, retry: Bool) -> BackoffDoneAction {
+            guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
+                preconditionFailure("We tried to create a new connection that we know nothing about?")
+            }
+
+            self.stats.backingOff -= 1
+
+            if retry || self.stats.active < self.minimumConcurrentConnections {
+                self.stats.connecting += 1
+                self.connections[index].retryConnect()
+                return .createConnection(.init(eventLoop: self.eventLoop, connectionID: connectionID))
+            }
+
+            if let connectionID = self.swapForDeletion(index: index) {
+                return .cancelIdleTimeoutTimer(connectionID)
+            }
+
+            return .none
+        }
+
+        private mutating func swapForDeletion(index indexToDelete: Int) -> ConnectionID? {
+            let lastConnectedIndex = self.connections.lastIndex(where: { $0.isConnected })
+
+            if lastConnectedIndex == nil || lastConnectedIndex! < indexToDelete {
+                self.removeO1(indexToDelete)
+                return nil
+            }
+
+            guard let lastConnectedIndex = lastConnectedIndex else { preconditionFailure() }
+
+            switch indexToDelete {
+            case 0..<self.minimumConcurrentConnections:
+                // the connection to be removed is a persisted connection
+                self.connections.swapAt(indexToDelete, lastConnectedIndex)
+                self.removeO1(lastConnectedIndex)
+
+                switch lastConnectedIndex {
+                case 0..<self.minimumConcurrentConnections:
+                    // a persisted connection was moved within the persisted connections. thats fine.
+                    return nil
+
+                case self.minimumConcurrentConnections..<self.maximumConcurrentConnectionSoftLimit:
+                    // a demand connection was moved to a persisted connection. If it currently idle
+                    // or ping ponging, we must cancel its idle timeout timer
+                    if self.connections[indexToDelete].isIdleOrPingPonging {
+                        return self.connections[indexToDelete].id
+                    }
+                    return nil
+
+                case self.maximumConcurrentConnectionSoftLimit..<self.maximumConcurrentConnectionHardLimit:
+                    // an overflow connection was moved to a demand connection. It has to be currently leased
+                    precondition(self.connections[indexToDelete].isLeased)
+                    return nil
+
+                default:
+                    return nil
+                }
+
+            case self.minimumConcurrentConnections..<self.maximumConcurrentConnectionSoftLimit:
+                // the connection to be removed is a demand connection
+                switch lastConnectedIndex {
+                case self.minimumConcurrentConnections..<self.maximumConcurrentConnectionSoftLimit:
+                    // an overflow connection was moved to a demand connection. It has to be currently leased
+                    precondition(self.connections[indexToDelete].isLeased)
+                    return nil
+
+                default:
+                    return nil
+                }
+
+            default:
+                return nil
+            }
+        }
+
+        private mutating func removeO1(_ indexToDelete: Int) {
+            let lastIndex = self.connections.endIndex - 1
+
+            if indexToDelete == lastIndex {
+                self.connections.remove(at: indexToDelete)
+            } else {
+                self.connections.swapAt(indexToDelete, lastIndex)
+                self.connections.remove(at: lastIndex)
+            }
         }
 
         // MARK: Leasing and releasing
@@ -339,22 +513,28 @@ extension PoolStateMachine {
             self.stats.leased -= 1
 
             self.connections[index].release()
-            let context = self.generateIdleConnectionContextForConnection(at: index)
+            let context = self.generateIdleConnectionContextForConnection(at: index, hasBecomeIdle: true)
             return (index, context)
         }
 
-        mutating func pingpong(_ connectionID: Connection.ID) -> Connection {
+        mutating func pingPongIfIdle(_ connectionID: Connection.ID) -> Connection? {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
-                preconditionFailure("A connection that we don't know was released? Something is very wrong...")
+                // because of a race this connection (connection close runs against trigger of ping pong)
+                // was already removed from the state machine.
+                return nil
+            }
+
+            guard let connection = self.connections[index].pingPongIfIdle() else {
+                return nil
             }
 
             self.stats.idle -= 1
             self.stats.pingpong += 1
 
-            return self.connections[index].pingpong()
+            return connection
         }
 
-        mutating func pingpongDone(_ connectionID: Connection.ID) -> (Int, IdleConnectionContext) {
+        mutating func pingPongDone(_ connectionID: Connection.ID) -> (Int, IdleConnectionContext) {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
                 preconditionFailure("A connection that we don't know was released? Something is very wrong...")
             }
@@ -363,7 +543,7 @@ extension PoolStateMachine {
             self.stats.pingpong -= 1
 
             self.connections[index].release()
-            let context = self.generateIdleConnectionContextForConnection(at: index)
+            let context = self.generateIdleConnectionContextForConnection(at: index, hasBecomeIdle: false)
             return (index, context)
         }
 
@@ -376,19 +556,25 @@ extension PoolStateMachine {
             return self.connections[index].close()
         }
 
-        mutating func closeConnectionIfIdle(_ connectionID: Connection.ID) -> Connection? {
+        mutating func closeConnectionIfIdle(_ connectionID: Connection.ID) -> (Connection, Bool)? {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
                 // because of a race this connection (connection close runs against trigger of timeout)
                 // was already removed from the state machine.
                 return nil
             }
 
-            guard self.connections[index].isIdle else {
-                // connection is not idle anymore, we may have just leased it for a request
+            guard let (connection, cancelPingPongTimer) = self.connections[index].closeIfIdle() else {
                 return nil
             }
 
-            return self.closeConnection(at: index)
+            if cancelPingPongTimer {
+                self.stats.idle -= 1
+            } else {
+                self.stats.pingpong -= 1
+            }
+            self.stats.closing += 1
+
+            return (connection, cancelPingPongTimer)
         }
 
         // MARK: Connection failure
@@ -422,32 +608,30 @@ extension PoolStateMachine {
 
         // MARK: Shutdown
 
-//        mutating func shutdown() -> CleanupContext {
-//            var cleanupContext = CleanupContext()
-//            let initialOverflowIndex = self.overflowIndex
-//
-//            self.connections = self.connections.enumerated().compactMap { index, connectionState in
-//                switch connectionState.cleanup(&cleanupContext) {
-//                case .removeConnection:
-//                    // If the connection has an index smaller than the previous overflow index,
-//                    // we deal with a general purpose connection.
-//                    // For this reason we need to decrement the overflow index.
-//                    if index < initialOverflowIndex {
-//                        self.overflowIndex = self.connections.index(before: self.overflowIndex)
-//                    }
-//                    return nil
-//
-//                case .keepConnection:
-//                    return connectionState
-//                }
-//            }
-//
-//            return cleanupContext
-//        }
+        mutating func shutdown(_ cleanup: inout ConnectionAction.Shutdown) {
+            self.connections = self.connections.enumerated().compactMap { index, connectionState in
+                var connectionState = connectionState
+                switch connectionState.shutdown() {
+                case .cancelBackoff(let connectionID):
+                    cleanup.backoffTimersToCancel.append(connectionID)
+                    return nil
+
+                case .close(let connection, let wasIdle):
+                    let cancelIdleTimer = index >= self.minimumConcurrentConnections
+                    cleanup.connections.append(
+                        .init(cancelIdleTimer: cancelIdleTimer, cancelPingPongTimer: wasIdle, connection: connection)
+                    )
+                    return connectionState
+
+                case .none:
+                    return connectionState
+                }
+            }
+        }
 
         // MARK: - Private functions -
 
-        private func generateIdleConnectionContextForConnection(at index: Int) -> IdleConnectionContext {
+        private func generateIdleConnectionContextForConnection(at index: Int, hasBecomeIdle: Bool) -> IdleConnectionContext {
             precondition(self.connections[index].isIdle)
             let use: ConnectionUse
             if index < self.minimumConcurrentConnections {
@@ -457,16 +641,13 @@ extension PoolStateMachine {
             } else {
                 use = .oneof
             }
-            return IdleConnectionContext(eventLoop: self.eventLoop, use: use)
+            return IdleConnectionContext(eventLoop: self.eventLoop, use: use, hasBecomeIdle: hasBecomeIdle)
         }
 
         private func findIdleConnection() -> Int? {
             return self.connections.firstIndex(where: { $0.isIdle })
         }
-
-
     }
-
 }
 #endif
 
