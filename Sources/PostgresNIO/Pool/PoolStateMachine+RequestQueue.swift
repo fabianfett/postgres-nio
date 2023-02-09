@@ -1,4 +1,3 @@
-#if swift(>=5.7)
 import DequeModule
 import NIOCore
 
@@ -113,4 +112,3 @@ extension PoolStateMachine {
         }
     }
 }
-#endif

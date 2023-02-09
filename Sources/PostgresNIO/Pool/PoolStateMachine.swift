@@ -1,4 +1,3 @@
-#if swift(>=5.7)
 import NIOCore
 
 protocol PooledConnection: AnyObject {
@@ -25,6 +24,12 @@ protocol ConnectionRequest {
     var deadline: NIODeadline { get }
 }
 
+enum PoolError: Error, Hashable {
+    case requestTimeout
+    case requestCancelled
+    case poolShutdown
+}
+
 struct PoolStateMachine<
     Connection: PooledConnection,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
@@ -33,7 +38,7 @@ struct PoolStateMachine<
     RequestID
 > where Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, RequestID == Request.ID {
 
-    struct Action {
+    struct Action: Equatable {
         let request: RequestAction
         let connection: ConnectionAction
 
@@ -45,12 +50,16 @@ struct PoolStateMachine<
         static func none() -> Action { Action(request: .none, connection: .none) }
     }
 
-    enum ConnectionAction {
-        struct Shutdown {
-            struct ConnectionToClose {
+    enum ConnectionAction: Equatable {
+        struct Shutdown: Equatable {
+            struct ConnectionToClose: Equatable {
                 var cancelIdleTimer: Bool
                 var cancelPingPongTimer: Bool
                 var connection: Connection
+
+                static func ==(lhs: Self, rhs: Self) -> Bool {
+                    lhs.cancelIdleTimer == rhs.cancelIdleTimer && lhs.cancelPingPongTimer == rhs.cancelPingPongTimer && lhs.connection === rhs.connection
+                }
             }
 
             var connections: [ConnectionToClose]
@@ -78,17 +87,65 @@ struct PoolStateMachine<
         case shutdownComplete(EventLoopPromise<Void>)
 
         case none
+
+        static func ==(lhs: Self, rhs: Self) -> Bool {
+            switch (lhs, rhs) {
+            case (.createConnection(let lhs), .createConnection(let rhs)):
+                return lhs == rhs
+            case (.scheduleBackoffTimer(let lhsConnID, let lhsBackoff, on: let lhsEL), .scheduleBackoffTimer(let rhsConnID, let rhsBackoff, on: let rhsEL)):
+                return lhsConnID == rhsConnID && lhsBackoff == rhsBackoff && lhsEL === rhsEL
+            case (.schedulePingTimer(let lhsConnID, on: let lhsEL), .schedulePingTimer(let rhsConnID, on: let rhsEL)):
+                return lhsConnID == rhsConnID && lhsEL === rhsEL
+            case (.cancelPingTimer(let lhs), .cancelPingTimer(let rhs)):
+                return lhs == rhs
+            case (.runPingPong(let lhs), .runPingPong(let rhs)):
+                return lhs === rhs
+            case (.schedulePingAndIdleTimeoutTimer(let lhsConnID, on: let lhsEL), .schedulePingAndIdleTimeoutTimer(let rhsConnID, on: let rhsEL)):
+                return lhsConnID == rhsConnID && lhsEL === rhsEL
+            case (.cancelPingAndIdleTimeoutTimer(let lhs), .cancelPingAndIdleTimeoutTimer(let rhs)):
+                return lhs == rhs
+            case (.cancelIdleTimeoutTimer(let lhs), .cancelIdleTimeoutTimer(let rhs)):
+                return lhs == rhs
+            case (.closeConnection(let lhsConn, cancelPingPongTimer: let lhsCancel), .closeConnection(let rhsConn, cancelPingPongTimer: let rhsCancel)):
+                return lhsConn === rhsConn && lhsCancel == rhsCancel
+            case (.shutdown(let lhs), .shutdown(let rhs)):
+                return lhs == rhs
+            case (.shutdownComplete(let lhs), .shutdownComplete(let rhs)):
+                return lhs.futureResult === rhs.futureResult
+            case (.none, .none):
+                return true
+            default:
+                return false
+            }
+        }
     }
 
-    enum RequestAction {
+    enum RequestAction: Equatable {
         case leaseConnection(Request, Connection, cancelTimeout: Bool)
 
-        case failRequest(Request, Error, cancelTimeout: Bool)
-        case failRequestsAndCancelTimeouts([Request], Error)
+        case failRequest(Request, PoolError, cancelTimeout: Bool)
+        case failRequestsAndCancelTimeouts([Request], PoolError)
 
         case scheduleRequestTimeout(for: Request, on: EventLoop)
 
         case none
+
+        static func ==(lhs: Self, rhs: Self) -> Bool {
+            switch (lhs, rhs) {
+            case (.leaseConnection(let lhsRequest, let lhsConn, let lhsCancel), .leaseConnection(let rhsRequest, let rhsConn, let rhsCancel)):
+                return lhsRequest.id == rhsRequest.id && lhsConn === rhsConn && lhsCancel == rhsCancel
+            case (.failRequest(let lhsRequest, let lhsError, let lhsCancel), .failRequest(let rhsRequest, let rhsError, let rhsCancel)):
+                return lhsRequest.id == rhsRequest.id && lhsError == rhsError && lhsCancel == rhsCancel
+            case (.failRequestsAndCancelTimeouts(let lhsRequests, let lhsError), .failRequestsAndCancelTimeouts(let rhsRequests, let rhsError)):
+                return Set(lhsRequests.lazy.map(\.id)) == Set(rhsRequests.lazy.map(\.id)) && lhsError == rhsError
+            case (.scheduleRequestTimeout(for: let lhsRequest, on: let lhsEL), .scheduleRequestTimeout(for: let rhsRequest, on: let rhsEL)):
+                return lhsRequest.id == rhsRequest.id && lhsEL === rhsEL
+            case (.none, .none):
+                return true
+            default:
+                return false
+            }
+        }
     }
 
     private enum PoolState {
@@ -116,8 +173,7 @@ struct PoolStateMachine<
     private var poolState: PoolState = .running
 
     private var failedConsecutiveConnectionAttempts: Int = 0
-    /// the error from the last connection creation
-    private var lastConnectFailure: Error?
+    
 
     init(
         configuration: PostgresConnectionPoolConfiguration,
@@ -200,7 +256,7 @@ struct PoolStateMachine<
 
         case .shuttingDown, .shutDown:
             return .init(
-                request: .failRequest(request, PSQLError.poolClosed, cancelTimeout: false),
+                request: .failRequest(request, PoolError.poolShutdown, cancelTimeout: false),
                 connection: .none
             )
         }
@@ -311,7 +367,7 @@ struct PoolStateMachine<
         }
 
         return .init(
-            request: .failRequest(request, PSQLError.queryCancelled, cancelTimeout: true),
+            request: .failRequest(request, PoolError.requestCancelled, cancelTimeout: true),
             connection: .none
         )
     }
@@ -322,7 +378,7 @@ struct PoolStateMachine<
         }
 
         return .init(
-            request: .failRequest(request, PSQLError.timeoutError, cancelTimeout: false),
+            request: .failRequest(request, PoolError.requestTimeout, cancelTimeout: false),
             connection: .none
         )
     }
@@ -336,7 +392,6 @@ struct PoolStateMachine<
 
     mutating func connectionEstablishFailed(_ error: any Error, for request: ConnectionRequest) -> Action {
         self.failedConsecutiveConnectionAttempts += 1
-        self.lastConnectFailure = error
 
         let eventLoopID = EventLoopID(request.eventLoop)
         let eventLoop = self.connections[eventLoopID]!.backoffNextConnectionAttempt(request.connectionID)
@@ -385,7 +440,8 @@ struct PoolStateMachine<
     }
 
     mutating func connectionClosed(_ connection: Connection) -> Action {
-        fatalError()
+        //fatalError()
+        return .none()
     }
 
     struct CleanupAction {
@@ -412,7 +468,7 @@ struct PoolStateMachine<
                 self.connections[key]!.shutdown(&shutdown)
             }
             return .init(
-                request: .failRequestsAndCancelTimeouts(self.requestQueue.removeAll(), PSQLError.poolClosed),
+                request: .failRequestsAndCancelTimeouts(self.requestQueue.removeAll(), PoolError.poolShutdown),
                 connection: .shutdown(shutdown)
             )
 
@@ -547,5 +603,3 @@ struct RandomStartIndexIterator<Collection: Swift.Collection>: Sequence, Iterato
         self
     }
 }
-
-#endif

@@ -1,4 +1,4 @@
-#if swift(>=5.7)
+import Atomics
 import NIOCore
 
 extension PoolStateMachine {
@@ -371,7 +371,7 @@ extension PoolStateMachine {
             return self.eventLoop
         }
 
-        enum BackoffDoneAction {
+        enum BackoffDoneAction: Equatable {
             case createConnection(ConnectionRequest)
             case cancelIdleTimeoutTimer(ConnectionID)
             case none
@@ -572,6 +572,13 @@ extension PoolStateMachine {
                 return nil
             }
 
+            if index < self.minimumConcurrentConnections {
+                // because of a race a connection might receive a idle timeout after it was moved into
+                // the persisted connections. If a connection is now persisted, we now need to ignore
+                // the trigger
+                return nil
+            }
+
             guard let (connection, cancelPingPongTimer) = self.connections[index].closeIfIdle() else {
                 return nil
             }
@@ -667,9 +674,6 @@ extension PoolStateMachine {
         }
     }
 }
-#endif
-
-import Atomics
 
 extension PostgresConnection.ID {
     static let globalGenerator = Generator()

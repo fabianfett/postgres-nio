@@ -74,7 +74,7 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssertTrue(connections.isEmpty)
         XCTAssertTrue(requests.isEmpty)
 
-        guard var request = connections.createNewDemandConnectionIfPossible() else {
+        guard let request = connections.createNewDemandConnectionIfPossible() else {
             return XCTFail("Expected to receive a connection request")
         }
         XCTAssertEqual(request, .init(eventLoop: self.eventLoop, connectionID: 0))
@@ -124,6 +124,118 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssertEqual(connections.stats, .init())
     }
 
+    func testBackoffDoneCreatesANewConnectionEvenThoughRetryIsSetToFalse() {
+        var connections = TestPoolStateMachine.EventLoopConnections(
+            eventLoop: self.eventLoop,
+            generator: self.idGenerator,
+            minimumConcurrentConnections: 1,
+            maximumConcurrentConnectionSoftLimit: 4,
+            maximumConcurrentConnectionHardLimit: 4
+        )
+
+        var requests = [TestPoolStateMachine.ConnectionRequest]()
+        connections.refillConnections(&requests)
+        XCTAssertEqual(connections.stats, .init(connecting: 1))
+        XCTAssertEqual(connections.soonAvailable, 1)
+        XCTAssertFalse(connections.isEmpty)
+        XCTAssertEqual(requests.count, 1)
+
+        guard let request = requests.first else { return XCTFail("Expected to receive a connection request") }
+        XCTAssertEqual(request, .init(eventLoop: self.eventLoop, connectionID: 0))
+
+        let backoffEventLoop = connections.backoffNextConnectionAttempt(request.connectionID)
+        XCTAssertTrue(backoffEventLoop === self.eventLoop)
+        XCTAssertEqual(connections.stats, .init(backingOff: 1))
+
+        XCTAssertEqual(connections.backoffDone(request.connectionID, retry: false), .createConnection(request))
+        XCTAssertEqual(connections.stats, .init(connecting: 1))
+    }
+
+    func testBackoffDoneCancelsIdleTimerIfAPersistedConnectionIsNotRetried() {
+        var connections = TestPoolStateMachine.EventLoopConnections(
+            eventLoop: self.eventLoop,
+            generator: self.idGenerator,
+            minimumConcurrentConnections: 2,
+            maximumConcurrentConnectionSoftLimit: 4,
+            maximumConcurrentConnectionHardLimit: 4
+        )
+
+        var requests = [TestPoolStateMachine.ConnectionRequest]()
+        connections.refillConnections(&requests)
+        XCTAssertEqual(connections.stats, .init(connecting: 2))
+        XCTAssertEqual(connections.soonAvailable, 2)
+        XCTAssertFalse(connections.isEmpty)
+        XCTAssertEqual(requests.count, 2)
+
+        var requestIterator = requests.makeIterator()
+        guard let firstRequest = requestIterator.next(), let secondRequest = requestIterator.next() else {
+            return XCTFail("Expected to get two requests")
+        }
+
+        guard let thirdRequest = connections.createNewDemandConnectionIfPossible() else {
+            return XCTFail("Expected to get another request")
+        }
+        XCTAssertEqual(connections.stats, .init(connecting: 3))
+
+        let newSecondConnection = TestConnection(request: secondRequest)
+        let (_, establishedSecondConnectionContext) = connections.newConnectionEstablished(newSecondConnection)
+        XCTAssertEqual(establishedSecondConnectionContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedSecondConnectionContext.use, .persisted)
+        XCTAssertEqual(connections.stats, .init(connecting: 2, idle: 1))
+        XCTAssertEqual(connections.soonAvailable, 2)
+
+        let newThirdConnection = TestConnection(request: thirdRequest)
+        let (_, establishedThirdConnectionContext) = connections.newConnectionEstablished(newThirdConnection)
+        XCTAssertEqual(establishedThirdConnectionContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedThirdConnectionContext.use, .demand)
+        XCTAssertEqual(connections.stats, .init(connecting: 1, idle: 2))
+        XCTAssertEqual(connections.soonAvailable, 1)
+
+        let backoffEventLoop = connections.backoffNextConnectionAttempt(firstRequest.connectionID)
+        XCTAssertTrue(backoffEventLoop === self.eventLoop)
+        XCTAssertEqual(connections.stats, .init(backingOff: 1, idle: 2))
+
+        // connection three should be moved to connection one and for this reason become permanent
+        XCTAssertEqual(connections.backoffDone(firstRequest.connectionID, retry: false), .cancelIdleTimeoutTimer(newThirdConnection.id))
+        XCTAssertEqual(connections.stats, .init(idle: 2))
+
+        XCTAssertNil(connections.closeConnectionIfIdle(newThirdConnection.id))
+    }
+
+    func testBackoffDoneReturnsNilIfOverflowConnection() {
+        var connections = TestPoolStateMachine.EventLoopConnections(
+            eventLoop: self.eventLoop,
+            generator: self.idGenerator,
+            minimumConcurrentConnections: 0,
+            maximumConcurrentConnectionSoftLimit: 4,
+            maximumConcurrentConnectionHardLimit: 4
+        )
+
+        guard let firstRequest = connections.createNewDemandConnectionIfPossible() else {
+            return XCTFail("Expected to get two requests")
+        }
+
+        guard let secondRequest = connections.createNewDemandConnectionIfPossible() else {
+            return XCTFail("Expected to get another request")
+        }
+        XCTAssertEqual(connections.stats, .init(connecting: 2))
+
+        let newFirstConnection = TestConnection(request: firstRequest)
+        let (_, establishedFirstConnectionContext) = connections.newConnectionEstablished(newFirstConnection)
+        XCTAssertEqual(establishedFirstConnectionContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedFirstConnectionContext.use, .demand)
+        XCTAssertEqual(connections.stats, .init(connecting: 1, idle: 1))
+        XCTAssertEqual(connections.soonAvailable, 1)
+
+        let backoffEventLoop = connections.backoffNextConnectionAttempt(secondRequest.connectionID)
+        XCTAssertTrue(backoffEventLoop === self.eventLoop)
+        XCTAssertEqual(connections.stats, .init(backingOff: 1, idle: 1))
+
+        XCTAssertEqual(connections.backoffDone(secondRequest.connectionID, retry: false), .none)
+        XCTAssertEqual(connections.stats, .init(idle: 1))
+
+        XCTAssertNotNil(connections.closeConnectionIfIdle(newFirstConnection.id))
+    }
 }
 
 final class TestConnection: PooledConnection {

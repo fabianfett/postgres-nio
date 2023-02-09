@@ -64,7 +64,6 @@ enum Server {
 }
 
 struct Factory: PostgresConnectionFactory {
-
     let configuration: PostgresConnection.Configuration
 
     init(configuration: PostgresConnection.Configuration) {
