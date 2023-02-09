@@ -1,7 +1,6 @@
 #if swift(>=5.7)
 import NIOCore
 
-@available(macOS 13.0, iOS 16.0, *)
 extension PoolStateMachine {
 
     private struct ConnectionState {
@@ -179,10 +178,27 @@ extension PoolStateMachine {
             }
         }
 
-        mutating func fail() {
+        enum StateBeforeClose {
+            case idle
+            case leased
+            case pingpong
+            case closing
+        }
+
+        mutating func closed() -> StateBeforeClose {
             switch self.state {
-            case .idle, .leased, .pingpong, .closing:
+            case .idle:
                 self.state = .closed
+                return .idle
+            case .leased:
+                self.state = .closed
+                return .leased
+            case .pingpong:
+                self.state = .closed
+                return .pingpong
+            case .closing:
+                self.state = .closed
+                return .closing
             case .starting, .backingOff, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
@@ -190,12 +206,12 @@ extension PoolStateMachine {
     }
 
     struct EventLoopConnections {
-        struct Stats {
+        struct Stats: Hashable {
+            var connecting: UInt16 = 0
+            var backingOff: UInt16 = 0
             var idle: UInt16 = 0
             var leased: UInt16 = 0
             var pingpong: UInt16 = 0
-            var connecting: UInt16 = 0
-            var backingOff: UInt16 = 0
             var closing: UInt16 = 0
 
             var soonAvailable: UInt16 {
@@ -224,7 +240,7 @@ extension PoolStateMachine {
         /// The connections states
         private var connections: [ConnectionState]
 
-        private var stats = Stats()
+        private(set) var stats = Stats()
 
         init(
             eventLoop: any EventLoop,
@@ -258,8 +274,8 @@ extension PoolStateMachine {
         /// A connection's use. Is it persisted or an overflow connection?
         enum ConnectionUse {
             case persisted
+            case demand
             case overflow
-            case oneof
         }
 
         /// Information around an idle connection.
@@ -280,7 +296,7 @@ extension PoolStateMachine {
         }
 
         mutating func refillConnections(_ requests: inout [ConnectionRequest]) {
-            let existingConnections = self.stats.soonAvailable
+            let existingConnections = self.stats.active
             let missingConnection = self.minimumConcurrentConnections - Int(existingConnections)
             guard missingConnection > 0 else {
                 return
@@ -472,17 +488,10 @@ extension PoolStateMachine {
         }
 
         mutating func leaseConnectionOrSoonAvailableConnectionCount() -> LeasedConnectionOrStartingCount {
-            if self.stats.idle == 0 {
-                return .startingCount(self.stats.soonAvailable)
+            if let connection = self.leaseConnection() {
+                return .leasedConnection(connection)
             }
-
-            if let index = self.findIdleConnection() {
-                self.stats.idle -= 1
-                self.stats.leased += 1
-                return .leasedConnection(self.connections[index].lease())
-            }
-
-            preconditionFailure("Stats and actual count are of.")
+            return .startingCount(self.stats.soonAvailable)
         }
 
         mutating func leaseConnection(at index: Int) -> Connection {
@@ -593,7 +602,16 @@ extension PoolStateMachine {
                 return nil
             }
 
-            self.connections[index].fail()
+            switch self.connections[index].closed() {
+            case .idle:
+                self.stats.idle -= 1
+            case .closing:
+                self.stats.closing -= 1
+            case .pingpong:
+                self.stats.pingpong -= 1
+            case .leased:
+                self.stats.leased -= 1
+            }
             let lastIndex = self.connections.endIndex - 1
 
             if index == lastIndex {
@@ -637,9 +655,9 @@ extension PoolStateMachine {
             if index < self.minimumConcurrentConnections {
                 use = .persisted
             } else if index < self.maximumConcurrentConnectionSoftLimit {
-                use = .overflow
+                use = .demand
             } else {
-                use = .oneof
+                use = .overflow
             }
             return IdleConnectionContext(eventLoop: self.eventLoop, use: use, hasBecomeIdle: hasBecomeIdle)
         }

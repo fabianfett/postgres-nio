@@ -14,7 +14,6 @@ public protocol PostgresConnectionFactory {
 
 }
 
-@available(macOS 13.0, iOS 16.0, *)
 public struct PostgresConnectionPoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///

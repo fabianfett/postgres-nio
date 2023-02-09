@@ -1,7 +1,7 @@
 #if swift(>=5.7)
 import NIOCore
 
-protocol PooledConnection {
+protocol PooledConnection: AnyObject {
     associatedtype ID: Hashable
 
     var id: ID { get }
@@ -25,7 +25,6 @@ protocol ConnectionRequest {
     var deadline: NIODeadline { get }
 }
 
-@available(macOS 13.0, iOS 16.0, *)
 struct PoolStateMachine<
     Connection: PooledConnection,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
@@ -98,9 +97,13 @@ struct PoolStateMachine<
         case shutDown
     }
 
-    struct ConnectionRequest {
+    struct ConnectionRequest: Equatable {
         var eventLoop: any EventLoop
         var connectionID: ConnectionID
+
+        static func ==(lhs: Self, rhs: Self) -> Bool {
+            lhs.connectionID == rhs.connectionID && lhs.eventLoop === rhs.eventLoop
+        }
     }
 
     private let configuration: PostgresConnectionPoolConfiguration
@@ -436,7 +439,7 @@ struct PoolStateMachine<
         case .persisted:
             let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
             return .init(request: .none, connection: .schedulePingTimer(connectionID, on: idleContext.eventLoop))
-        case .overflow:
+        case .demand:
             let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
             if idleContext.hasBecomeIdle {
                 return .init(
@@ -450,14 +453,13 @@ struct PoolStateMachine<
                 )
             }
 
-        case .oneof:
+        case .overflow:
             let connection = self.connections[eventLoopID]!.closeConnection(at: index)
             return .init(request: .none, connection: .closeConnection(connection, cancelPingPongTimer: false))
         }
     }
 }
 
-@available(macOS 13.0, iOS 16.0, *)
 extension PoolStateMachine {
     /// Calculates the delay for the next connection attempt after the given number of failed `attempts`.
     ///
