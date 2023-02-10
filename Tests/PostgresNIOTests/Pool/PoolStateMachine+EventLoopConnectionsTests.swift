@@ -2,7 +2,7 @@ import XCTest
 import NIOEmbedded
 @testable import PostgresNIO
 
-typealias TestPoolStateMachine = PoolStateMachine<TestConnection, PostgresConnection.ID.Generator, TestConnection.ID, TestRequest, Int>
+typealias TestPoolStateMachine = PoolStateMachine<TestConnection, PostgresConnection.ID.Generator, TestConnection.ID, TestRequest, TestRequest.ID>
 
 final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
     var eventLoop: EmbeddedEventLoop!
@@ -236,6 +236,42 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
 
         XCTAssertNotNil(connections.closeConnectionIfIdle(newFirstConnection.id))
     }
+
+    func testPingPong() {
+        var connections = TestPoolStateMachine.EventLoopConnections(
+            eventLoop: self.eventLoop,
+            generator: self.idGenerator,
+            minimumConcurrentConnections: 1,
+            maximumConcurrentConnectionSoftLimit: 4,
+            maximumConcurrentConnectionHardLimit: 4
+        )
+
+        var requests = [TestPoolStateMachine.ConnectionRequest]()
+        XCTAssertTrue(connections.isEmpty)
+        connections.refillConnections(&requests)
+        XCTAssertFalse(connections.isEmpty)
+        XCTAssertEqual(connections.stats, .init(connecting: 1))
+
+        XCTAssertEqual(requests.count, 1)
+        guard let firstRequest = requests.first else { return XCTFail("Expected to have a request here") }
+
+        let newConnection = TestConnection(request: firstRequest)
+        let (_, establishedConnectionContext) = connections.newConnectionEstablished(newConnection)
+        XCTAssertEqual(establishedConnectionContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedConnectionContext.use, .persisted)
+        XCTAssertEqual(connections.stats, .init(idle: 1))
+
+        guard let pingConnection = connections.pingPongIfIdle(newConnection.id) else {
+            return XCTFail("Expected to get a connection")
+        }
+        XCTAssert(newConnection === pingConnection)
+        XCTAssertEqual(connections.stats, .init(pingpong: 1))
+
+        let (_, afterPingIdleContext) = connections.pingPongDone(pingConnection.id)
+        XCTAssertEqual(afterPingIdleContext.hasBecomeIdle, false)
+        XCTAssertEqual(afterPingIdleContext.use, .persisted)
+        XCTAssertEqual(connections.stats, .init(idle: 1))
+    }
 }
 
 final class TestConnection: PooledConnection {
@@ -254,16 +290,27 @@ final class TestConnection: PooledConnection {
     }
 }
 
-final class TestRequest: ConnectionRequest {
-    let id: Int
+final class TestRequest: ConnectionRequest, Equatable {
+    struct ID: Hashable {
+        var objectID: ObjectIdentifier
+
+        init(_ request: TestRequest) {
+            self.objectID = ObjectIdentifier(request)
+        }
+    }
+
+    var id: ID { ID(self) }
 
     let preferredEventLoop: EventLoop?
 
     let deadline: NIODeadline
 
-    init(id: Int, deadline: NIODeadline, preferredEventLoop: EventLoop?) {
-        self.id = id
+    init(deadline: NIODeadline, preferredEventLoop: EventLoop?) {
         self.deadline = deadline
         self.preferredEventLoop = preferredEventLoop
+    }
+
+    static func ==(lhs: TestRequest, rhs: TestRequest) -> Bool {
+        lhs.id == rhs.id && lhs.preferredEventLoop === rhs.preferredEventLoop && lhs.deadline == rhs.deadline
     }
 }

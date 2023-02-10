@@ -30,6 +30,21 @@ enum PoolError: Error, Hashable {
     case poolShutdown
 }
 
+struct PoolConfiguration {
+    /// The minimum number of connections to preserve in the pool.
+    ///
+    /// If the pool is mostly idle and the Redis servers close these idle connections,
+    /// the `RedisConnectionPool` will initiate new outbound connections proactively to avoid the number of available connections dropping below this number.
+    public var minimumConnectionCount: Int = 0
+
+    /// The maximum number of connections to for this pool, to be preserved.
+    public var maximumConnectionSoftLimit: Int = 10
+
+    public var maximumConnectionHardLimit: Int = 10
+
+    public var maxConsecutivePicksFromEventLoopQueue: UInt8 = 16
+}
+
 struct PoolStateMachine<
     Connection: PooledConnection,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
@@ -163,7 +178,7 @@ struct PoolStateMachine<
         }
     }
 
-    private let configuration: PostgresConnectionPoolConfiguration
+    private let configuration: PoolConfiguration
     private let generator: ConnectionIDGenerator
     private let eventLoops: [any EventLoop]
     private let eventLoopGroup: any EventLoopGroup
@@ -176,7 +191,7 @@ struct PoolStateMachine<
     
 
     init(
-        configuration: PostgresConnectionPoolConfiguration,
+        configuration: PoolConfiguration,
         generator: ConnectionIDGenerator,
         eventLoopGroup: any EventLoopGroup
     ) {
@@ -186,7 +201,10 @@ struct PoolStateMachine<
         self.eventLoopGroup = eventLoopGroup
         self.connections = [:]
         self.connections.reserveCapacity(self.eventLoops.count)
-        self.requestQueue = .init(eventLoopGroup: eventLoopGroup)
+        self.requestQueue = .init(
+            eventLoopGroup: eventLoopGroup,
+            maxConsecutivePicksFromEventLoopQueue: configuration.maxConsecutivePicksFromEventLoopQueue
+        )
 
         let minimumConnectionsPerEL = configuration.minimumConnectionCount / self.eventLoops.count
         var additionalMinimumConnections = configuration.minimumConnectionCount % self.eventLoops.count

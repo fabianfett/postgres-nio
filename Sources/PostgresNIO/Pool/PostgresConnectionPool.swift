@@ -104,7 +104,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         self.backgroundLogger = backgroundLogger
         self.configuration = configuration
         self._stateMachine = PoolStateMachine(
-            configuration: configuration,
+            configuration: .init(configuration),
             generator: PostgresConnection.ID.Generator(),
             eventLoopGroup: eventLoopGroup
         )
@@ -720,5 +720,13 @@ extension PoolError {
             psqlError = PSQLError.queryCancelled
         }
         return psqlError
+    }
+}
+
+extension PoolConfiguration {
+    init(_ postgres: PostgresConnectionPoolConfiguration) {
+        self.minimumConnectionCount = postgres.minimumConnectionCount
+        self.maximumConnectionSoftLimit = postgres.maximumConnectionSoftLimit
+        self.maximumConnectionHardLimit = postgres.maximumConnectionHardLimit
     }
 }

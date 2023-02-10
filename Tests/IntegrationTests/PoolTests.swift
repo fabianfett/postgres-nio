@@ -64,9 +64,6 @@ final class PoolTests: XCTestCase {
             "off-el": "\(offCounter.load(ordering: .relaxed))",
         ])
     }
-
-
-
 }
 
 struct Factory: PostgresConnectionFactory {
