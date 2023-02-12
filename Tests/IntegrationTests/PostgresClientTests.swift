@@ -4,7 +4,7 @@ import NIOPosix
 import Logging
 @preconcurrency import Atomics
 
-final class PoolTests: XCTestCase {
+final class PostgresClientTests: XCTestCase {
 
     func testGetConnection() {
         var mlogger = Logger(label: "test")
@@ -13,23 +13,22 @@ final class PoolTests: XCTestCase {
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 8)
         defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
 
-        var configuration = PostgresConnectionPoolConfiguration()
-        configuration.minimumConnectionCount = 8
-        configuration.maximumConnectionSoftLimit = 64
-        configuration.maximumConnectionHardLimit = 64
+        var clientConfig = PostgresClient.Configuration()
+        clientConfig.pool.minimumConnectionCount = 0
+        clientConfig.pool.maximumConnectionSoftLimit = 8*4
+        clientConfig.pool.maximumConnectionHardLimit = 12*4
+        clientConfig.pool.keepAliveFrequency = .seconds(5)
+        clientConfig.pool.connectionIdleTimeout = .seconds(15)
 
-        let connectionConfig = PostgresConnection.Configuration(
-            connection: .init(host: "localhost"),
-            authentication: .init(username: "test_username", database: "test_database", password: "test_password"),
-            tls: .disable
-        )
+        clientConfig.server.host = "postgres-nio-tests.vsl"
+        clientConfig.authentication.username = "postgres"
+        clientConfig.authentication.database = "postgres"
+        clientConfig.authentication.password = "password"
 
-        let pool = PostgresConnectionPool(
-            configuration: configuration,
-            factory: Factory(configuration: connectionConfig),
-            eventLoopGroup: eventLoopGroup,
-            backgroundLogger: logger
-        )
+        var maybeClient: PostgresClient?
+        XCTAssertNoThrow(maybeClient = try PostgresClient(configuration: clientConfig, eventLoopGroup: eventLoopGroup, backgroundLogger: logger))
+        guard let client = maybeClient else { return XCTFail("Expected to have a client here") }
+//        defer { XCTAssertNoThrow(try client.syncShutdown()) }
 
         let onCounter = ManagedAtomic(0)
         let offCounter = ManagedAtomic(0)
@@ -41,7 +40,7 @@ final class PoolTests: XCTestCase {
 
         for _ in 0..<10000 {
             let eventLoop = eventLoopGroup.next()
-            let future = pool.withConnection(logger: logger, preferredEventLoop: eventLoop) {
+            let future = client.withConnection(logger: logger, preferredEventLoop: eventLoop) {
                 connection -> EventLoopFuture<PostgresQueryResult> in
 
                 if eventLoop === connection.eventLoop {
@@ -66,7 +65,7 @@ final class PoolTests: XCTestCase {
     }
 }
 
-struct Factory: PostgresConnectionFactory {
+struct MockConnectionFactory: ConnectionFactory {
     let configuration: PostgresConnection.Configuration
 
     init(configuration: PostgresConnection.Configuration) {

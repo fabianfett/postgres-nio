@@ -2,15 +2,15 @@ import XCTest
 import NIOEmbedded
 @testable import PostgresNIO
 
-typealias TestPoolStateMachine = PoolStateMachine<TestConnection, PostgresConnection.ID.Generator, TestConnection.ID, TestRequest, TestRequest.ID>
+typealias TestPoolStateMachine = PoolStateMachine<TestConnection, ConnectionIDGenerator, TestConnection.ID, TestRequest, TestRequest.ID>
 
 final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
     var eventLoop: EmbeddedEventLoop!
-    var idGenerator: PostgresConnection.ID.Generator!
+    var idGenerator: ConnectionIDGenerator!
 
     override func setUp() {
         self.eventLoop = EmbeddedEventLoop()
-        self.idGenerator = PostgresConnection.ID.Generator()
+        self.idGenerator = ConnectionIDGenerator()
         super.setUp()
     }
 
@@ -275,6 +275,8 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
 }
 
 final class TestConnection: PooledConnection {
+
+    
     let id: Int
 
     let eventLoop: EventLoop
@@ -287,6 +289,14 @@ final class TestConnection: PooledConnection {
     init(request: TestPoolStateMachine.ConnectionRequest) {
         self.id = request.connectionID
         self.eventLoop = request.eventLoop
+    }
+
+    func onClose(_ closure: @escaping @Sendable () -> ()) {
+        preconditionFailure()
+    }
+
+    func close(promise: NIOCore.EventLoopPromise<Void>?) {
+        preconditionFailure()
     }
 }
 

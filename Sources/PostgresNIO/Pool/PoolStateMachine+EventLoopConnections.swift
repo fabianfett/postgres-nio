@@ -674,19 +674,3 @@ extension PoolStateMachine {
         }
     }
 }
-
-extension PostgresConnection.ID {
-    static let globalGenerator = Generator()
-
-    struct Generator {
-        private let atomic: ManagedAtomic<Int>
-
-        init() {
-            self.atomic = .init(0)
-        }
-
-        func next() -> Int {
-            return self.atomic.loadThenWrappingIncrement(ordering: .relaxed)
-        }
-    }
-}

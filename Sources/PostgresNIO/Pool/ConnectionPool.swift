@@ -2,7 +2,15 @@ import NIOCore
 import NIOConcurrencyHelpers
 import Logging
 
-public protocol PostgresPoolDelegate {
+public protocol ConnectionKeepAliveBehavior: Sendable {
+    associatedtype Connection: PooledConnection
+
+    var keepAliveFrequency: TimeAmount? { get }
+
+    func runKeepAlive(for connection: Connection, logger: Logger) -> EventLoopFuture<Void>
+}
+
+public protocol ConnectionPoolDelegate {
     /// The connection with the given ID has started trying to establish a connection. The outcome
     /// of the connection will be reported as either ``connectSucceeded(id:streamCapacity:)`` or
     /// ``connectFailed(id:error:)``.
@@ -32,15 +40,18 @@ public protocol PostgresPoolDelegate {
     func connectionClosed(id: PostgresConnection.ID, error: Error?)
 }
 
-public protocol PostgresConnectionFactory {
+public protocol ConnectionFactory {
+    associatedtype ConnectionID: Hashable
+    associatedtype Connection
+
     func makeConnection(
         on eventLoop: any EventLoop,
-        id: PostgresConnection.ID,
+        id: ConnectionID,
         backgroundLogger: Logger
-    ) -> EventLoopFuture<PostgresConnection>
+    ) -> EventLoopFuture<Connection>
 }
 
-public struct PostgresConnectionPoolConfiguration {
+public struct ConnectionPoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
     /// If the pool is mostly idle and the Redis servers close these idle connections,
@@ -52,32 +63,62 @@ public struct PostgresConnectionPoolConfiguration {
 
     public var maximumConnectionHardLimit: Int
 
-    public var pingFrequency: TimeAmount
-
-    public var pingQuery: String
-
     public var idleTimeout: TimeAmount
 
     public init() {
         self.minimumConnectionCount = System.coreCount
         self.maximumConnectionSoftLimit = System.coreCount
         self.maximumConnectionHardLimit = System.coreCount * 4
-        self.pingFrequency = .seconds(30)
-        self.pingQuery = "SELECT 1;"
         self.idleTimeout = .seconds(60)
     }
 }
 
-public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @unchecked Sendable {
-    typealias StateMachine = PoolStateMachine<PostgresConnection, PostgresConnection.ID.Generator, PostgresConnection.ID, Request, Int>
+public protocol PooledConnection: AnyObject, Sendable {
+    associatedtype ID: Hashable
+
+    var id: ID { get }
+
+    var eventLoop: EventLoop { get }
+
+    func onClose(_ closure: @escaping @Sendable () -> ())
+
+    func close(promise: EventLoopPromise<Void>?)
+}
+
+public protocol ConnectionIDGeneratorProtocol {
+    associatedtype ID: Hashable
+
+    func next() -> ID
+}
+
+public protocol ConnectionRequest {
+    associatedtype ID: Hashable
+
+    var id: ID { get }
+
+    var preferredEventLoop: EventLoop? { get }
+
+    var deadline: NIODeadline { get }
+}
+
+public final class ConnectionPool<
+    Factory: ConnectionFactory,
+    Connection: PooledConnection,
+    ConnectionID: Hashable,
+    ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
+    KeepAliveBehavior: ConnectionKeepAliveBehavior
+>: @unchecked Sendable where Factory.Connection == Connection, Factory.ConnectionID == ConnectionID, Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, KeepAliveBehavior.Connection == Connection {
+    typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID>
 
     let eventLoopGroup: any EventLoopGroup
 
     let factory: Factory
 
+    let keepAliveBehavior: KeepAliveBehavior
+
     let backgroundLogger: Logger
 
-    let configuration: PostgresConnectionPoolConfiguration
+    let configuration: ConnectionPoolConfiguration
 
     private let stateLock = NIOLock()
     private var _stateMachine: StateMachine
@@ -85,27 +126,30 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
     /// The request connection timeout timers. Protected by the stateLock
     private var _requestTimer = [Request.ID: Scheduled<Void>]()
     /// The connection ping timers. Protected by the stateLock
-    private var _pingTimer = [PostgresConnection.ID: Scheduled<Void>]()
+    private var _pingTimer = [ConnectionID: Scheduled<Void>]()
     /// The connection idle timers. Protected by the stateLock
-    private var _idleTimer = [PostgresConnection.ID: Scheduled<Void>]()
+    private var _idleTimer = [ConnectionID: Scheduled<Void>]()
     /// The connection backoff timers. Protected by the stateLock
-    private var _backoffTimer = [PostgresConnection.ID: Scheduled<Void>]()
+    private var _backoffTimer = [ConnectionID: Scheduled<Void>]()
 
-    private let requestIDGenerator = PostgresConnection.ID.Generator()
+    private let requestIDGenerator = PostgresNIO.ConnectionIDGenerator()
 
     public init(
-        configuration: PostgresConnectionPoolConfiguration,
+        configuration: ConnectionPoolConfiguration,
+        idGenerator: ConnectionIDGenerator,
         factory: Factory,
+        keepAliveBehavior: KeepAliveBehavior,
         eventLoopGroup: any EventLoopGroup,
         backgroundLogger: Logger
     ) {
         self.eventLoopGroup = eventLoopGroup
         self.factory = factory
+        self.keepAliveBehavior = keepAliveBehavior
         self.backgroundLogger = backgroundLogger
         self.configuration = configuration
         self._stateMachine = PoolStateMachine(
             configuration: .init(configuration),
-            generator: PostgresConnection.ID.Generator(),
+            generator: idGenerator,
             eventLoopGroup: eventLoopGroup
         )
 
@@ -116,60 +160,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         }
     }
 
-    @available(macOS 13.0, *)
-    public func query<Clock: _Concurrency.Clock>(
-        _ query: PostgresQuery,
-        deadline: Clock.Instant,
-        clock: Clock,
-        logger: Logger,
-        file: String = #file,
-        line: Int = #line
-    ) async throws -> PostgresRowSequence {
-        let connection = try await self.leaseConnection(logger: logger)
-
-        return try await connection.query(query, logger: logger)
-    }
-
-    public func withConnection<Result>(logger: Logger, _ closure: (PostgresConnection) async throws -> Result) async throws -> Result {
-        let connection = try await self.leaseConnection(logger: logger)
-
-        defer { self.releaseConnection(connection) }
-
-        return try await closure(connection)
-    }
-
-    public func withConnection<Result>(
-        logger: Logger,
-        preferredEventLoop: EventLoop,
-        _ closure: @escaping @Sendable (PostgresConnection) -> EventLoopFuture<Result>
-    ) -> EventLoopFuture<Result> {
-        let requestID = self.requestIDGenerator.next()
-
-        let promise = preferredEventLoop.makePromise(of: PostgresConnection.self)
-
-        let request = Request(
-            id: requestID,
-            deadline: .now() + .seconds(10),
-            promise: promise,
-            preferredEventLoop: preferredEventLoop
-        )
-
-        self.modifyStateAndRunActions { stateMachine in
-            stateMachine.leaseConnection(request)
-        }
-
-        return promise.futureResult.flatMap { connection in
-            let returnedFuture = closure(connection)
-            returnedFuture.whenComplete { _ in
-                self.modifyStateAndRunActions { stateMachine in
-                    stateMachine.releaseConnection(connection)
-                }
-            }
-            return returnedFuture
-        }
-    }
-
-    private func leaseConnection(logger: Logger) async throws -> PostgresConnection {
+    public func leaseConnection(logger: Logger) async throws -> Connection {
         let requestID = self.requestIDGenerator.next()
 
         let connection = try await withTaskCancellationHandler {
@@ -177,7 +168,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 throw CancellationError()
             }
 
-            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<PostgresConnection, any Error>) in
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Connection, any Error>) in
                 let request = Request(
                     id: requestID,
                     deadline: .now() + .seconds(10),
@@ -203,13 +194,44 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         return connection
     }
 
-    private func releaseConnection(_ connection: PostgresConnection) {
+    public func releaseConnection(_ connection: Connection) {
         self.backgroundLogger.debug("connection released", metadata: [
             PSQLLoggingMetadata.Key.connectionID.rawValue: "\(connection.id)",
         ])
 
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.releaseConnection(connection)
+        }
+    }
+
+    public func withConnection<Result>(
+        logger: Logger,
+        preferredEventLoop: EventLoop,
+        _ closure: @escaping @Sendable (Connection) -> EventLoopFuture<Result>
+    ) -> EventLoopFuture<Result> {
+        let requestID = self.requestIDGenerator.next()
+
+        let promise = preferredEventLoop.makePromise(of: Connection.self)
+
+        let request = Request(
+            id: requestID,
+            deadline: .now() + .seconds(10),
+            promise: promise,
+            preferredEventLoop: preferredEventLoop
+        )
+
+        self.modifyStateAndRunActions { stateMachine in
+            stateMachine.leaseConnection(request)
+        }
+
+        return promise.futureResult.flatMap { connection in
+            let returnedFuture = closure(connection)
+            returnedFuture.whenComplete { _ in
+                self.modifyStateAndRunActions { stateMachine in
+                    stateMachine.releaseConnection(connection)
+                }
+            }
+            return returnedFuture
         }
     }
 
@@ -237,30 +259,30 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         enum ConnectionAction {
             enum Unlocked {
                 case createConnection(StateMachine.ConnectionRequest)
-                case closeConnection(PostgresConnection)
-                case closeConnections([PostgresConnection])
-                case runPingPong(PostgresConnection)
+                case closeConnection(Connection)
+                case closeConnections([Connection])
+                case runPingPong(Connection)
                 case shutdownComplete(EventLoopPromise<Void>)
                 case none
             }
 
             enum Locked {
-                case scheduleBackoffTimer(PostgresConnection.ID, backoff: TimeAmount, on: any EventLoop)
-                case cancelBackoffTimers([PostgresConnection.ID])
+                case scheduleBackoffTimer(ConnectionID, backoff: TimeAmount, on: any EventLoop)
+                case cancelBackoffTimers([ConnectionID])
 
-                case schedulePingTimer(PostgresConnection.ID, on: any EventLoop)
-                case cancelPingTimer(PostgresConnection.ID)
-                case schedulePingAndIdleTimeoutTimer(PostgresConnection.ID, on: any EventLoop)
-                case cancelPingAndIdleTimeoutTimer(PostgresConnection.ID)
-                case cancelIdleTimeoutTimer(PostgresConnection.ID)
-                case cancelTimers(idle: [PostgresConnection.ID], pingPong: [PostgresConnection.ID], backoff: [PostgresConnection.ID])
+                case schedulePingTimer(ConnectionID, on: any EventLoop)
+                case cancelPingTimer(ConnectionID)
+                case schedulePingAndIdleTimeoutTimer(ConnectionID, on: any EventLoop)
+                case cancelPingAndIdleTimeoutTimer(ConnectionID)
+                case cancelIdleTimeoutTimer(ConnectionID)
+                case cancelTimers(idle: [ConnectionID], pingPong: [ConnectionID], backoff: [ConnectionID])
                 case none
             }
         }
 
         enum RequestAction {
             enum Unlocked {
-                case leaseConnection(Request, PostgresConnection)
+                case leaseConnection(Request, Connection)
                 case failRequest(Request, Error)
                 case failRequests([Request], Error)
                 case none
@@ -301,12 +323,10 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 if cancelTimeout {
                     self.locked.request = .cancelRequestTimeout(request.id)
                 }
-                let psqlError = error.mapToPSQLError(lastConnectError: lastConnectError)
-                self.unlocked.request = .failRequest(request, psqlError)
+                self.unlocked.request = .failRequest(request, error)
             case .failRequestsAndCancelTimeouts(let requests, let error):
-                let psqlError = error.mapToPSQLError(lastConnectError: lastConnectError)
                 self.locked.request = .cancelRequestTimeouts(requests)
-                self.unlocked.request = .failRequests(requests, psqlError)
+                self.unlocked.request = .failRequests(requests, error)
             case .scheduleRequestTimeout(for: let request, on: let eventLoop):
                 self.locked.request = .scheduleRequestTimeout(for: request, on: eventLoop)
             case .none:
@@ -437,7 +457,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
                 PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
             ])
 
-            connection.query(.init(unsafeSQL: self.configuration.pingQuery), logger: self.backgroundLogger).whenComplete { result in
+            self.keepAliveBehavior.runKeepAlive(for: connection, logger: self.backgroundLogger).whenComplete { result in
                 switch result {
                 case .success:
                     self.modifyStateAndRunActions { stateMachine in
@@ -484,7 +504,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
             switch result {
             case .success(let connection):
                 self.connectionEstablished(connection)
-                connection.closeFuture.whenComplete { _ in
+                connection.onClose {
                     self.modifyStateAndRunActions { stateMachine in
                         stateMachine.connectionClosed(connection)
                     }
@@ -495,7 +515,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         }
     }
 
-    private func connectionEstablished(_ connection: PostgresConnection) {
+    private func connectionEstablished(_ connection: Connection) {
         self.backgroundLogger.debug("Connection established", metadata: [
             .connectionID: "\(connection.id)"
         ])
@@ -541,11 +561,11 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         cancelTimer.cancel()
     }
 
-    private func schedulePingTimerForConnection(_ connectionID: PostgresConnection.ID, on eventLoop: any EventLoop) {
+    private func schedulePingTimerForConnection(_ connectionID: ConnectionID, on eventLoop: any EventLoop) {
         self.backgroundLogger.trace("Schedule connection ping timer", metadata: [
             .connectionID: "\(connectionID)",
         ])
-        let scheduled = eventLoop.scheduleTask(in: self.configuration.pingFrequency) {
+        let scheduled = eventLoop.scheduleTask(in: self.keepAliveBehavior.keepAliveFrequency!) {
             // there might be a race between a cancelTimer call and the triggering
             // of this scheduled task. both want to acquire the lock
             self.modifyStateAndRunActions { stateMachine in
@@ -561,7 +581,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         self._pingTimer[connectionID] = scheduled
     }
 
-    private func cancelPingTimerForConnection(_ connectionID: PostgresConnection.ID) {
+    private func cancelPingTimerForConnection(_ connectionID: ConnectionID) {
         self.backgroundLogger.trace("Cancel connection ping timer", metadata: [
             .connectionID: "\(connectionID)",
         ])
@@ -571,7 +591,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         cancelTimer.cancel()
     }
 
-    private func scheduleIdleTimeoutTimerForConnection(_ connectionID: PostgresConnection.ID, on eventLoop: any EventLoop) {
+    private func scheduleIdleTimeoutTimerForConnection(_ connectionID: ConnectionID, on eventLoop: any EventLoop) {
         self.backgroundLogger.trace("Schedule idle connection timeout timer", metadata: [
             .connectionID: "\(connectionID)",
         ])
@@ -591,7 +611,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         self._idleTimer[connectionID] = scheduled
     }
 
-    private func cancelIdleTimeoutTimerForConnection(_ connectionID: PostgresConnection.ID) {
+    private func cancelIdleTimeoutTimerForConnection(_ connectionID: ConnectionID) {
         self.backgroundLogger.trace("Cancel idle connection timeout", metadata: [
             .connectionID: "\(connectionID)",
         ])
@@ -602,7 +622,7 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
     }
 
     private func scheduleConnectionStartBackoffTimer(
-        _ connectionID: PostgresConnection.ID,
+        _ connectionID: ConnectionID,
         _ timeAmount: TimeAmount,
         on eventLoop: EventLoop
     ) {
@@ -625,14 +645,14 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
         self._backoffTimer[connectionID] = scheduled
     }
 
-    private func cancelConnectionStartBackoffTimer(_ connectionID: PostgresConnection.ID) {
+    private func cancelConnectionStartBackoffTimer(_ connectionID: ConnectionID) {
         guard let backoffTimer = self._backoffTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have a backoff timer for connection \(connectionID) at this point.")
         }
         backoffTimer.cancel()
     }
 
-    private func closeConnection(_ connection: PostgresConnection) {
+    private func closeConnection(_ connection: Connection) {
         self.backgroundLogger.debug("close connection", metadata: [
             PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
         ])
@@ -643,11 +663,11 @@ public final class PostgresConnectionPool<Factory: PostgresConnectionFactory>: @
     }
 }
 
-extension PostgresConnectionPool {
+extension ConnectionPool {
     struct Request: ConnectionRequest {
         private enum AsyncReportingMechanism {
-            case continuation(CheckedContinuation<PostgresConnection, any Error>)
-            case promise(EventLoopPromise<PostgresConnection>)
+            case continuation(CheckedContinuation<Connection, any Error>)
+            case promise(EventLoopPromise<Connection>)
         }
 
         typealias ID = Int
@@ -663,8 +683,8 @@ extension PostgresConnectionPool {
         init(
             id: Int,
             deadline: NIOCore.NIODeadline,
-            continuation: CheckedContinuation<PostgresConnection, any Error>,
-            preferredEventLoop: (any EventLoop)?
+            continuation: CheckedContinuation<Connection, Error>,
+            preferredEventLoop: EventLoop?
         ) {
             self.id = id
             self.deadline = deadline
@@ -675,7 +695,7 @@ extension PostgresConnectionPool {
         init(
             id: Int,
             deadline: NIOCore.NIODeadline,
-            promise: EventLoopPromise<PostgresConnection>,
+            promise: EventLoopPromise<Connection>,
             preferredEventLoop: (any EventLoop)?
         ) {
             self.id = id
@@ -684,7 +704,7 @@ extension PostgresConnectionPool {
             self.reportingMechanism = .promise(promise)
         }
 
-        fileprivate func succeed(_ connection: PostgresConnection) {
+        fileprivate func succeed(_ connection: Connection) {
             switch self.reportingMechanism {
             case .continuation(let continuation):
                 continuation.resume(returning: connection)
@@ -693,7 +713,7 @@ extension PostgresConnectionPool {
             }
         }
 
-        fileprivate func fail(_ error: any Error) {
+        fileprivate func fail(_ error: Error) {
             switch self.reportingMechanism {
             case .continuation(let continuation):
                 continuation.resume(throwing: error)
@@ -704,27 +724,8 @@ extension PostgresConnectionPool {
     }
 }
 
-extension PostgresConnection: PooledConnection {}
-
-extension PostgresConnection.ID.Generator: ConnectionIDGeneratorProtocol {}
-
-extension PoolError {
-    func mapToPSQLError(lastConnectError: Error?) -> Error {
-        let psqlError: any Error
-        switch self {
-        case .poolShutdown:
-            psqlError = PSQLError.poolClosed
-        case .requestTimeout:
-            psqlError = lastConnectError ?? PSQLError.timeoutError
-        case .requestCancelled:
-            psqlError = PSQLError.queryCancelled
-        }
-        return psqlError
-    }
-}
-
 extension PoolConfiguration {
-    init(_ postgres: PostgresConnectionPoolConfiguration) {
+    init(_ postgres: ConnectionPoolConfiguration) {
         self.minimumConnectionCount = postgres.minimumConnectionCount
         self.maximumConnectionSoftLimit = postgres.maximumConnectionSoftLimit
         self.maximumConnectionHardLimit = postgres.maximumConnectionHardLimit

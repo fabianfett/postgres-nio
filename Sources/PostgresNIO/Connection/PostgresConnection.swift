@@ -56,7 +56,7 @@ public final class PostgresConnection {
             }
 
             /// Do not try to create a TLS connection to the server.
-            public static var disable: Self = Self.init(.disable)
+            public static let disable: Self = Self.init(Base.disable)
 
             /// Try to create a TLS connection to the server. If the server supports TLS, create a TLS connection.
             /// If the server does not support TLS, create an insecure connection.
@@ -156,7 +156,7 @@ public final class PostgresConnection {
         return !self.channel.isActive
     }
 
-    let id: ID
+    public let id: ID
 
     private var _logger: Logger
 
@@ -380,7 +380,7 @@ public final class PostgresConnection {
         return promise.futureResult
     }
 
-    func close(promise: EventLoopPromise<Void>?) {
+    public func close(promise: EventLoopPromise<Void>?) {
         self.channel.close(mode: .all, promise: promise)
     }
 }
