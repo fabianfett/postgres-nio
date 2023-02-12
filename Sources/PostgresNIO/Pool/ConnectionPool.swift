@@ -10,7 +10,7 @@ public protocol ConnectionKeepAliveBehavior: Sendable {
     func runKeepAlive(for connection: Connection, logger: Logger) -> EventLoopFuture<Void>
 }
 
-public protocol ConnectionPoolDelegate {
+public protocol ConnectionPoolMetricsDelegate {
     /// The connection with the given ID has started trying to establish a connection. The outcome
     /// of the connection will be reported as either ``connectSucceeded(id:streamCapacity:)`` or
     /// ``connectFailed(id:error:)``.
@@ -45,7 +45,7 @@ public protocol ConnectionFactory {
     associatedtype Connection
 
     func makeConnection(
-        on eventLoop: any EventLoop,
+        on eventLoop: EventLoop,
         id: ConnectionID,
         backgroundLogger: Logger
     ) -> EventLoopFuture<Connection>
@@ -110,7 +110,7 @@ public final class ConnectionPool<
 >: @unchecked Sendable where Factory.Connection == Connection, Factory.ConnectionID == ConnectionID, Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, KeepAliveBehavior.Connection == Connection {
     typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID>
 
-    let eventLoopGroup: any EventLoopGroup
+    let eventLoopGroup: EventLoopGroup
 
     let factory: Factory
 
@@ -139,7 +139,7 @@ public final class ConnectionPool<
         idGenerator: ConnectionIDGenerator,
         factory: Factory,
         keepAliveBehavior: KeepAliveBehavior,
-        eventLoopGroup: any EventLoopGroup,
+        eventLoopGroup: EventLoopGroup,
         backgroundLogger: Logger
     ) {
         self.eventLoopGroup = eventLoopGroup
@@ -168,7 +168,7 @@ public final class ConnectionPool<
                 throw CancellationError()
             }
 
-            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Connection, any Error>) in
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Connection, Error>) in
                 let request = Request(
                     id: requestID,
                     deadline: .now() + .seconds(10),
@@ -267,12 +267,12 @@ public final class ConnectionPool<
             }
 
             enum Locked {
-                case scheduleBackoffTimer(ConnectionID, backoff: TimeAmount, on: any EventLoop)
+                case scheduleBackoffTimer(ConnectionID, backoff: TimeAmount, on: EventLoop)
                 case cancelBackoffTimers([ConnectionID])
 
-                case schedulePingTimer(ConnectionID, on: any EventLoop)
+                case schedulePingTimer(ConnectionID, on: EventLoop)
                 case cancelPingTimer(ConnectionID)
-                case schedulePingAndIdleTimeoutTimer(ConnectionID, on: any EventLoop)
+                case schedulePingAndIdleTimeoutTimer(ConnectionID, on: EventLoop)
                 case cancelPingAndIdleTimeoutTimer(ConnectionID)
                 case cancelIdleTimeoutTimer(ConnectionID)
                 case cancelTimers(idle: [ConnectionID], pingPong: [ConnectionID], backoff: [ConnectionID])
@@ -525,7 +525,7 @@ public final class ConnectionPool<
         }
     }
 
-    private func connectionEstablishFailed(_ error: any Error, for request: StateMachine.ConnectionRequest) {
+    private func connectionEstablishFailed(_ error: Error, for request: StateMachine.ConnectionRequest) {
         self.backgroundLogger.debug("Connection creation failed", metadata: [
             .connectionID: "\(request.connectionID)", .error: "\(error)"
         ])
@@ -535,7 +535,7 @@ public final class ConnectionPool<
         }
     }
 
-    private func scheduleRequestTimeout(_ request: Request, on eventLoop: any EventLoop) {
+    private func scheduleRequestTimeout(_ request: Request, on eventLoop: EventLoop) {
         let requestID = request.id
         let scheduled = eventLoop.scheduleTask(deadline: request.deadline) {
             // there might be a race between a the timeout timer and the pool scheduling the
@@ -561,7 +561,7 @@ public final class ConnectionPool<
         cancelTimer.cancel()
     }
 
-    private func schedulePingTimerForConnection(_ connectionID: ConnectionID, on eventLoop: any EventLoop) {
+    private func schedulePingTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
         self.backgroundLogger.trace("Schedule connection ping timer", metadata: [
             .connectionID: "\(connectionID)",
         ])
@@ -591,7 +591,7 @@ public final class ConnectionPool<
         cancelTimer.cancel()
     }
 
-    private func scheduleIdleTimeoutTimerForConnection(_ connectionID: ConnectionID, on eventLoop: any EventLoop) {
+    private func scheduleIdleTimeoutTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
         self.backgroundLogger.trace("Schedule idle connection timeout timer", metadata: [
             .connectionID: "\(connectionID)",
         ])
@@ -666,7 +666,7 @@ public final class ConnectionPool<
 extension ConnectionPool {
     struct Request: ConnectionRequest {
         private enum AsyncReportingMechanism {
-            case continuation(CheckedContinuation<Connection, any Error>)
+            case continuation(CheckedContinuation<Connection, Error>)
             case promise(EventLoopPromise<Connection>)
         }
 
@@ -696,7 +696,7 @@ extension ConnectionPool {
             id: Int,
             deadline: NIOCore.NIODeadline,
             promise: EventLoopPromise<Connection>,
-            preferredEventLoop: (any EventLoop)?
+            preferredEventLoop: EventLoop?
         ) {
             self.id = id
             self.deadline = deadline

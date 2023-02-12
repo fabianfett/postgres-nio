@@ -385,7 +385,7 @@ struct PoolStateMachine<
         return self.handleIdleConnection(eventLoopID, index: index, idleContext: idleContext)
     }
 
-    mutating func connectionEstablishFailed(_ error: any Error, for request: ConnectionRequest) -> Action {
+    mutating func connectionEstablishFailed(_ error: Error, for request: ConnectionRequest) -> Action {
         self.failedConsecutiveConnectionAttempts += 1
 
         let eventLoopID = EventLoopID(request.eventLoop)

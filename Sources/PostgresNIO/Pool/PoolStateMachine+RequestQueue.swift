@@ -58,7 +58,7 @@ extension PoolStateMachine {
             self.count == 0
         }
 
-        init(eventLoopGroup: any EventLoopGroup, maxConsecutivePicksFromEventLoopQueue: UInt8) {
+        init(eventLoopGroup: EventLoopGroup, maxConsecutivePicksFromEventLoopQueue: UInt8) {
             self.generalPurposeQueue = .init(minimumCapacity: 128)
             self.eventLoopQueues = [:]
 
