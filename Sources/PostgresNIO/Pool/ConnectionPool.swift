@@ -10,36 +10,6 @@ public protocol ConnectionKeepAliveBehavior: Sendable {
     func runKeepAlive(for connection: Connection, logger: Logger) -> EventLoopFuture<Void>
 }
 
-public protocol ConnectionPoolMetricsDelegate {
-    /// The connection with the given ID has started trying to establish a connection. The outcome
-    /// of the connection will be reported as either ``connectSucceeded(id:streamCapacity:)`` or
-    /// ``connectFailed(id:error:)``.
-    func startedConnecting(id: PostgresConnection.ID)
-
-    /// A connection attempt failed with the given error. After some period of
-    /// time ``startedConnecting(id:)`` may be called again.
-    func connectFailed(id: PostgresConnection.ID, error: Error)
-
-    /// A connection was established on the connection with the given ID. `streamCapacity` streams are
-    /// available to use on the connection. The maximum number of available streams may change over
-    /// time and is reported via ``connectionUtilizationChanged(id:streamsUsed:streamCapacity:)``. The
-    func connectSucceeded(id: PostgresConnection.ID)
-
-    /// The utlization of the connection changed; a stream may have been used, returned or the
-    /// maximum number of concurrent streams available on the connection changed.
-    func connectionLeased(id: PostgresConnection.ID)
-
-    func connectionReleased(id: PostgresConnection.ID)
-
-    /// The remote peer is quiescing the connection: no new streams will be created on it. The
-    /// connection will eventually be closed and removed from the pool.
-    func connectionClosing(id: PostgresConnection.ID)
-
-    /// The connection was closed. The connection may be established again in the future (notified
-    /// via ``startedConnecting(id:)``).
-    func connectionClosed(id: PostgresConnection.ID, error: Error?)
-}
-
 public protocol ConnectionFactory {
     associatedtype ConnectionID: Hashable
     associatedtype Connection
@@ -106,8 +76,10 @@ public final class ConnectionPool<
     Connection: PooledConnection,
     ConnectionID: Hashable,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
-    KeepAliveBehavior: ConnectionKeepAliveBehavior
+    KeepAliveBehavior: ConnectionKeepAliveBehavior,
+    MetricsDelegate: ConnectionPoolMetricsDelegate
 >: @unchecked Sendable where Factory.Connection == Connection, Factory.ConnectionID == ConnectionID, Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, KeepAliveBehavior.Connection == Connection {
+    
     typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID>
 
     let eventLoopGroup: EventLoopGroup
@@ -115,6 +87,8 @@ public final class ConnectionPool<
     let factory: Factory
 
     let keepAliveBehavior: KeepAliveBehavior
+
+    let metricsDelegate: MetricsDelegate
 
     let backgroundLogger: Logger
 
@@ -139,12 +113,14 @@ public final class ConnectionPool<
         idGenerator: ConnectionIDGenerator,
         factory: Factory,
         keepAliveBehavior: KeepAliveBehavior,
+        metricsDelegate: MetricsDelegate,
         eventLoopGroup: EventLoopGroup,
         backgroundLogger: Logger
     ) {
         self.eventLoopGroup = eventLoopGroup
         self.factory = factory
         self.keepAliveBehavior = keepAliveBehavior
+        self.metricsDelegate = metricsDelegate
         self.backgroundLogger = backgroundLogger
         self.configuration = configuration
         self._stateMachine = PoolStateMachine(
@@ -194,21 +170,7 @@ public final class ConnectionPool<
         return connection
     }
 
-    public func releaseConnection(_ connection: Connection) {
-        self.backgroundLogger.debug("connection released", metadata: [
-            PSQLLoggingMetadata.Key.connectionID.rawValue: "\(connection.id)",
-        ])
-
-        self.modifyStateAndRunActions { stateMachine in
-            stateMachine.releaseConnection(connection)
-        }
-    }
-
-    public func withConnection<Result>(
-        logger: Logger,
-        preferredEventLoop: EventLoop,
-        _ closure: @escaping @Sendable (Connection) -> EventLoopFuture<Result>
-    ) -> EventLoopFuture<Result> {
+    public func leaseConnection(logger: Logger, preferredEventLoop: EventLoop) -> EventLoopFuture<Connection> {
         let requestID = self.requestIDGenerator.next()
 
         let promise = preferredEventLoop.makePromise(of: Connection.self)
@@ -224,12 +186,29 @@ public final class ConnectionPool<
             stateMachine.leaseConnection(request)
         }
 
-        return promise.futureResult.flatMap { connection in
+        return promise.futureResult
+    }
+
+    public func releaseConnection(_ connection: Connection) {
+        self.backgroundLogger.debug("connection released", metadata: [
+            PSQLLoggingMetadata.Key.connectionID.rawValue: "\(connection.id)",
+        ])
+
+        self.modifyStateAndRunActions { stateMachine in
+            stateMachine.releaseConnection(connection)
+        }
+    }
+
+    public func withConnection<Result>(
+        logger: Logger,
+        preferredEventLoop: EventLoop,
+        _ closure: @escaping @Sendable (Connection) -> EventLoopFuture<Result>
+    ) -> EventLoopFuture<Result> {
+
+        return self.leaseConnection(logger: logger, preferredEventLoop: preferredEventLoop).flatMap { connection in
             let returnedFuture = closure(connection)
             returnedFuture.whenComplete { _ in
-                self.modifyStateAndRunActions { stateMachine in
-                    stateMachine.releaseConnection(connection)
-                }
+                self.releaseConnection(connection)
             }
             return returnedFuture
         }

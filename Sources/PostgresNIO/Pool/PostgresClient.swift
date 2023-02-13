@@ -108,7 +108,14 @@ public final class PostgresClient: Sendable {
         public init() {}
     }
 
-    typealias Pool = ConnectionPool<PostgresConnectionFactory, PostgresConnection, PostgresConnection.ID, ConnectionIDGenerator, PostgresKeepAliveBehavor>
+    typealias Pool = ConnectionPool<
+        PostgresConnectionFactory,
+        PostgresConnection,
+        PostgresConnection.ID,
+        ConnectionIDGenerator,
+        PostgresKeepAliveBehavor,
+        NoOpConnectionPoolMetrics<PostgresConnection.ID>
+    >
 
     let pool: Pool
 
@@ -118,6 +125,7 @@ public final class PostgresClient: Sendable {
             idGenerator: .init(),
             factory: PostgresConnectionFactory(configuration: .init(configuration)),
             keepAliveBehavior: .init(configuration),
+            metricsDelegate: .init(connectionIDType: PostgresConnection.ID.self),
             eventLoopGroup: eventLoopGroup,
             backgroundLogger: backgroundLogger
         )
