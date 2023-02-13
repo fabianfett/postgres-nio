@@ -20,6 +20,8 @@ struct PoolConfiguration {
     public var maximumConnectionHardLimit: Int = 10
 
     public var maxConsecutivePicksFromEventLoopQueue: UInt8 = 16
+
+    public var keepAlive: Bool = false
 }
 
 struct PoolStateMachine<
@@ -70,9 +72,11 @@ struct PoolStateMachine<
         case cancelPingTimer(Connection.ID)
         case runPingPong(Connection)
 
+        case scheduleIdleTimeoutTimer(Connection.ID, on: EventLoop)
+        case cancelIdleTimeoutTimer(Connection.ID)
+
         case schedulePingAndIdleTimeoutTimer(Connection.ID, on: EventLoop)
         case cancelPingAndIdleTimeoutTimer(Connection.ID)
-        case cancelIdleTimeoutTimer(Connection.ID)
 
         case closeConnection(Connection, cancelPingPongTimer: Bool)
         case shutdown(Shutdown)
@@ -411,6 +415,7 @@ struct PoolStateMachine<
     }
 
     mutating func connectionPingTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
+        precondition(self.configuration.keepAlive)
         precondition(self.requestQueue.isEmpty)
 
         guard let connection = self.connections[.init(eventLoop)]!.pingPongIfIdle(connectionID) else {
@@ -420,6 +425,7 @@ struct PoolStateMachine<
     }
 
     mutating func connectionPingPongDone(_ connection: Connection) -> Action {
+        precondition(self.configuration.keepAlive)
         let eventLoopID = EventLoopID(connection.eventLoop)
         let (index, idleContext) = self.connections[eventLoopID]!.pingPongDone(connection.id)
         return self.handleIdleConnection(eventLoopID, index: index, idleContext: idleContext)
@@ -486,23 +492,33 @@ struct PoolStateMachine<
             )
         }
 
+        func makeIdleConnectionAction(for connectionID: ConnectionID, scheduleTimeout: Bool) -> ConnectionAction {
+            switch (scheduleTimeout, self.configuration.keepAlive) {
+            case (false, false):
+                return .none
+            case (true, false):
+                return .scheduleIdleTimeoutTimer(connectionID, on: idleContext.eventLoop)
+            case (false, true):
+                return .schedulePingTimer(connectionID, on: idleContext.eventLoop)
+            case (true, true):
+                return .schedulePingAndIdleTimeoutTimer(connectionID, on: idleContext.eventLoop)
+            }
+        }
+
         switch idleContext.use {
         case .persisted:
             let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
-            return .init(request: .none, connection: .schedulePingTimer(connectionID, on: idleContext.eventLoop))
+            return .init(
+                request: .none,
+                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: false)
+            )
+
         case .demand:
             let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
-            if idleContext.hasBecomeIdle {
-                return .init(
-                    request: .none,
-                    connection: .schedulePingAndIdleTimeoutTimer(connectionID, on: idleContext.eventLoop)
-                )
-            } else {
-                return .init(
-                    request: .none,
-                    connection: .schedulePingTimer(connectionID, on: idleContext.eventLoop)
-                )
-            }
+            return .init(
+                request: .none,
+                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: idleContext.hasBecomeIdle)
+            )
 
         case .overflow:
             let connection = self.connections[eventLoopID]!.closeConnection(at: index)

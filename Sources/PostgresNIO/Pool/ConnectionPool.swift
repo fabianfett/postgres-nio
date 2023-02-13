@@ -52,7 +52,7 @@ public protocol PooledConnection: AnyObject, Sendable {
 
     func onClose(_ closure: @escaping @Sendable () -> ())
 
-    func close(promise: EventLoopPromise<Void>?)
+    func close()
 }
 
 public protocol ConnectionIDGeneratorProtocol {
@@ -124,7 +124,7 @@ public final class ConnectionPool<
         self.backgroundLogger = backgroundLogger
         self.configuration = configuration
         self._stateMachine = PoolStateMachine(
-            configuration: .init(configuration),
+            configuration: .init(configuration, keepAliveBehavior: keepAliveBehavior),
             generator: idGenerator,
             eventLoopGroup: eventLoopGroup
         )
@@ -251,9 +251,10 @@ public final class ConnectionPool<
 
                 case schedulePingTimer(ConnectionID, on: EventLoop)
                 case cancelPingTimer(ConnectionID)
+                case scheduleIdleTimeoutTimer(ConnectionID, on: EventLoop)
+                case cancelIdleTimeoutTimer(ConnectionID)
                 case schedulePingAndIdleTimeoutTimer(ConnectionID, on: EventLoop)
                 case cancelPingAndIdleTimeoutTimer(ConnectionID)
-                case cancelIdleTimeoutTimer(ConnectionID)
                 case cancelTimers(idle: [ConnectionID], pingPong: [ConnectionID], backoff: [ConnectionID])
                 case none
             }
@@ -330,6 +331,8 @@ public final class ConnectionPool<
                 self.locked.connection = .schedulePingAndIdleTimeoutTimer(connectionID, on: eventLoop)
             case .cancelPingAndIdleTimeoutTimer(let connectionID):
                 self.locked.connection = .cancelPingAndIdleTimeoutTimer(connectionID)
+            case .scheduleIdleTimeoutTimer(let connectionID, on: let eventLoop):
+                self.locked.connection = .scheduleIdleTimeoutTimer(connectionID, on: eventLoop)
             case .cancelIdleTimeoutTimer(let connectionID):
                 self.locked.connection = .cancelIdleTimeoutTimer(connectionID)
             case .runPingPong(let connection):
@@ -380,6 +383,9 @@ public final class ConnectionPool<
         case .cancelPingAndIdleTimeoutTimer(let connectionID):
             self.cancelPingTimerForConnection(connectionID)
             self.cancelIdleTimeoutTimerForConnection(connectionID)
+
+        case .scheduleIdleTimeoutTimer(let connectionID, on: let eventLoop):
+            self.scheduleIdleTimeoutTimerForConnection(connectionID, on: eventLoop)
 
         case .cancelIdleTimeoutTimer(let connectionID):
             self.cancelIdleTimeoutTimerForConnection(connectionID)
@@ -636,9 +642,7 @@ public final class ConnectionPool<
             PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
         ])
 
-        // we are not interested in the close promise... The connection will inform us about its
-        // close anyway.
-        connection.close(promise: nil)
+        connection.close()
     }
 }
 
@@ -704,9 +708,10 @@ extension ConnectionPool {
 }
 
 extension PoolConfiguration {
-    init(_ postgres: ConnectionPoolConfiguration) {
-        self.minimumConnectionCount = postgres.minimumConnectionCount
-        self.maximumConnectionSoftLimit = postgres.maximumConnectionSoftLimit
-        self.maximumConnectionHardLimit = postgres.maximumConnectionHardLimit
+    init<KeepAliveBehavior: ConnectionKeepAliveBehavior>(_ configuration: ConnectionPoolConfiguration, keepAliveBehavior: KeepAliveBehavior) {
+        self.minimumConnectionCount = configuration.minimumConnectionCount
+        self.maximumConnectionSoftLimit = configuration.maximumConnectionSoftLimit
+        self.maximumConnectionHardLimit = configuration.maximumConnectionHardLimit
+        self.keepAlive = keepAliveBehavior.keepAliveFrequency != nil
     }
 }

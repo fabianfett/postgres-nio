@@ -275,8 +275,6 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
 }
 
 final class TestConnection: PooledConnection {
-
-    
     let id: Int
 
     let eventLoop: EventLoop
@@ -295,7 +293,7 @@ final class TestConnection: PooledConnection {
         preconditionFailure()
     }
 
-    func close(promise: NIOCore.EventLoopPromise<Void>?) {
+    func close() {
         preconditionFailure()
     }
 }

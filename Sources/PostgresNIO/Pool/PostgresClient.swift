@@ -261,6 +261,10 @@ extension PostgresKeepAliveBehavor {
 }
 
 extension PostgresConnection: PooledConnection {
+    public func close() {
+        self.close(promise: nil)
+    }
+
     public func onClose(_ closure: @escaping () -> ()) {
         self.closeFuture.whenComplete { _ in closure() }
     }

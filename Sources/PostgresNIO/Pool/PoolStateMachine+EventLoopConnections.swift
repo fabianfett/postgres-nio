@@ -505,7 +505,7 @@ extension PoolStateMachine {
             return self.connections[index].id
         }
 
-        /// A new HTTP/1.1 connection was released.
+        /// A connection was released.
         ///
         /// This will put the position into the idle state.
         ///
