@@ -15,7 +15,7 @@ extension PoolStateMachine {
             /// `.closing` and `.closed`
             case idle(Connection, since: NIODeadline)
             /// The connection is ping-ponging. Valid transitions to: `.idle` and `.closed`
-            case pingpong(Connection, since: NIODeadline)
+            case runKeepAlive(Connection, since: NIODeadline)
             /// The connection is leased and executing a query. Valid transitions to: `.idle` and `.closed`
             case leased(Connection)
             /// The connection is closing. Valid transitions to: `.closed`
@@ -37,7 +37,7 @@ extension PoolStateMachine {
             switch self.state {
             case .idle:
                 return true
-            case .backingOff, .starting, .closed, .closing, .leased, .pingpong:
+            case .backingOff, .starting, .closed, .closing, .leased, .runKeepAlive:
                 return false
             }
         }
@@ -46,14 +46,14 @@ extension PoolStateMachine {
             switch self.state {
             case .leased:
                 return true
-            case .backingOff, .starting, .closed, .closing, .idle, .pingpong:
+            case .backingOff, .starting, .closed, .closing, .idle, .runKeepAlive:
                 return false
             }
         }
 
-        var isIdleOrPingPonging: Bool {
+        var isIdleOrRunningKeepAlive: Bool {
             switch self.state {
-            case .idle, .pingpong:
+            case .idle, .runKeepAlive:
                 return true
             case .backingOff, .starting, .closed, .closing, .leased:
                 return false
@@ -62,7 +62,7 @@ extension PoolStateMachine {
 
         var isConnected: Bool {
             switch self.state {
-            case .idle, .pingpong, .leased:
+            case .idle, .runKeepAlive, .leased:
                 return true
             case .backingOff, .starting, .closed, .closing:
                 return false
@@ -73,7 +73,7 @@ extension PoolStateMachine {
             switch self.state {
             case .starting:
                 self.state = .idle(connection, since: .now())
-            case .backingOff, .idle, .leased, .pingpong, .closing, .closed:
+            case .backingOff, .idle, .leased, .runKeepAlive, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -83,7 +83,7 @@ extension PoolStateMachine {
             switch self.state {
             case .starting:
                 self.state = .backingOff
-            case .backingOff, .idle, .leased, .pingpong, .closing, .closed:
+            case .backingOff, .idle, .leased, .runKeepAlive, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -92,7 +92,7 @@ extension PoolStateMachine {
             switch self.state {
             case .backingOff:
                 self.state = .starting
-            case .starting, .idle, .leased, .pingpong, .closing, .closed:
+            case .starting, .idle, .leased, .runKeepAlive, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -102,7 +102,7 @@ extension PoolStateMachine {
             case .idle(let connection, since: _):
                 self.state = .leased(connection)
                 return connection
-            case .backingOff, .starting, .leased, .pingpong, .closing, .closed:
+            case .backingOff, .starting, .leased, .runKeepAlive, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -111,21 +111,21 @@ extension PoolStateMachine {
             switch self.state {
             case .leased(let connection):
                 self.state = .idle(connection, since: .now())
-            case .pingpong(let connection, let since):
+            case .runKeepAlive(let connection, let since):
                 self.state = .idle(connection, since: since)
             case .backingOff, .starting, .idle, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
 
-        mutating func pingPongIfIdle() -> Connection? {
+        mutating func runKeepAliveIfIdle() -> Connection? {
             switch self.state {
             case .idle(let connection, let since):
-                self.state = .pingpong(connection, since: since)
+                self.state = .runKeepAlive(connection, since: since)
                 return connection
             case .leased, .closed, .closing:
                 return nil
-            case .backingOff, .starting, .pingpong:
+            case .backingOff, .starting, .runKeepAlive:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -135,7 +135,7 @@ extension PoolStateMachine {
             case .idle(let connection, since: _):
                 self.state = .closing(connection)
                 return connection
-            case .backingOff, .starting, .leased, .pingpong, .closing, .closed:
+            case .backingOff, .starting, .leased, .runKeepAlive, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -145,7 +145,7 @@ extension PoolStateMachine {
             case .idle(let connection, since: _):
                 self.state = .closing(connection)
                 return (connection, true)
-            case .pingpong(let connection, since: _):
+            case .runKeepAlive(let connection, since: _):
                 self.state = .closing(connection)
                 return (connection, false)
             case .leased, .closed:
@@ -170,7 +170,7 @@ extension PoolStateMachine {
             case .idle(let connection, since: _):
                 self.state = .closing(connection)
                 return .close(connection, wasIdle: true)
-            case .leased(let connection), .pingpong(let connection, since: _):
+            case .leased(let connection), .runKeepAlive(let connection, since: _):
                 self.state = .closing(connection)
                 return .close(connection, wasIdle: false)
             case .closed:
@@ -181,7 +181,7 @@ extension PoolStateMachine {
         enum StateBeforeClose {
             case idle
             case leased
-            case pingpong
+            case runKeepAlive
             case closing
         }
 
@@ -193,9 +193,9 @@ extension PoolStateMachine {
             case .leased:
                 self.state = .closed
                 return .leased
-            case .pingpong:
+            case .runKeepAlive:
                 self.state = .closed
-                return .pingpong
+                return .runKeepAlive
             case .closing:
                 self.state = .closed
                 return .closing
@@ -211,15 +211,15 @@ extension PoolStateMachine {
             var backingOff: UInt16 = 0
             var idle: UInt16 = 0
             var leased: UInt16 = 0
-            var pingpong: UInt16 = 0
+            var runningKeepAlive: UInt16 = 0
             var closing: UInt16 = 0
 
             var soonAvailable: UInt16 {
-                self.connecting + self.backingOff + self.pingpong
+                self.connecting + self.backingOff + self.runningKeepAlive
             }
 
             var active: UInt16 {
-                self.idle + self.leased + self.pingpong + self.connecting + self.backingOff
+                self.idle + self.leased + self.runningKeepAlive + self.connecting + self.backingOff
             }
         }
 
@@ -421,7 +421,7 @@ extension PoolStateMachine {
                 case self.minimumConcurrentConnections..<self.maximumConcurrentConnectionSoftLimit:
                     // a demand connection was moved to a persisted connection. If it currently idle
                     // or ping ponging, we must cancel its idle timeout timer
-                    if self.connections[indexToDelete].isIdleOrPingPonging {
+                    if self.connections[indexToDelete].isIdleOrRunningKeepAlive {
                         return self.connections[indexToDelete].id
                     }
                     return nil
@@ -528,30 +528,30 @@ extension PoolStateMachine {
             return (index, context)
         }
 
-        mutating func pingPongIfIdle(_ connectionID: Connection.ID) -> Connection? {
+        mutating func keepAliveIfIdle(_ connectionID: Connection.ID) -> Connection? {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
                 // because of a race this connection (connection close runs against trigger of ping pong)
                 // was already removed from the state machine.
                 return nil
             }
 
-            guard let connection = self.connections[index].pingPongIfIdle() else {
+            guard let connection = self.connections[index].runKeepAliveIfIdle() else {
                 return nil
             }
 
             self.stats.idle -= 1
-            self.stats.pingpong += 1
+            self.stats.runningKeepAlive += 1
 
             return connection
         }
 
-        mutating func pingPongDone(_ connectionID: Connection.ID) -> (Int, IdleConnectionContext) {
+        mutating func keepAliveSucceeded(_ connectionID: Connection.ID) -> (Int, IdleConnectionContext) {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
                 preconditionFailure("A connection that we don't know was released? Something is very wrong...")
             }
 
             self.stats.idle += 1
-            self.stats.pingpong -= 1
+            self.stats.runningKeepAlive -= 1
 
             self.connections[index].release()
             let context = self.generateIdleConnectionContextForConnection(at: index, hasBecomeIdle: false)
@@ -581,18 +581,18 @@ extension PoolStateMachine {
                 return nil
             }
 
-            guard let (connection, cancelPingPongTimer) = self.connections[index].closeIfIdle() else {
+            guard let (connection, cancelKeepAliveTimer) = self.connections[index].closeIfIdle() else {
                 return nil
             }
 
-            if cancelPingPongTimer {
+            if cancelKeepAliveTimer {
                 self.stats.idle -= 1
             } else {
-                self.stats.pingpong -= 1
+                self.stats.runningKeepAlive -= 1
             }
             self.stats.closing += 1
 
-            return (connection, cancelPingPongTimer)
+            return (connection, cancelKeepAliveTimer)
         }
 
         // MARK: Connection failure
@@ -616,8 +616,8 @@ extension PoolStateMachine {
                 self.stats.idle -= 1
             case .closing:
                 self.stats.closing -= 1
-            case .pingpong:
-                self.stats.pingpong -= 1
+            case .runKeepAlive:
+                self.stats.runningKeepAlive -= 1
             case .leased:
                 self.stats.leased -= 1
             }
@@ -646,7 +646,7 @@ extension PoolStateMachine {
                 case .close(let connection, let wasIdle):
                     let cancelIdleTimer = index >= self.minimumConcurrentConnections
                     cleanup.connections.append(
-                        .init(cancelIdleTimer: cancelIdleTimer, cancelPingPongTimer: wasIdle, connection: connection)
+                        .init(cancelIdleTimer: cancelIdleTimer, cancelKeepAliveTimer: wasIdle, connection: connection)
                     )
                     return connectionState
 

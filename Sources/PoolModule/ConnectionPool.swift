@@ -85,8 +85,8 @@ public final class ConnectionPool<
     private var _lastConnectError: Error?
     /// The request connection timeout timers. Protected by the stateLock
     private var _requestTimer = [Request.ID: Scheduled<Void>]()
-    /// The connection ping timers. Protected by the stateLock
-    private var _pingTimer = [ConnectionID: Scheduled<Void>]()
+    /// The connection keep-alive timers. Protected by the stateLock
+    private var _keepAliveTimer = [ConnectionID: Scheduled<Void>]()
     /// The connection idle timers. Protected by the stateLock
     private var _idleTimer = [ConnectionID: Scheduled<Void>]()
     /// The connection backoff timers. Protected by the stateLock
@@ -227,13 +227,13 @@ public final class ConnectionPool<
                 case scheduleBackoffTimer(ConnectionID, backoff: TimeAmount, on: EventLoop)
                 case cancelBackoffTimers([ConnectionID])
 
-                case schedulePingTimer(ConnectionID, on: EventLoop)
-                case cancelPingTimer(ConnectionID)
+                case scheduleKeepAliveTimer(ConnectionID, on: EventLoop)
+                case cancelKeepAliveTimer(ConnectionID)
                 case scheduleIdleTimeoutTimer(ConnectionID, on: EventLoop)
                 case cancelIdleTimeoutTimer(ConnectionID)
-                case schedulePingAndIdleTimeoutTimer(ConnectionID, on: EventLoop)
-                case cancelPingAndIdleTimeoutTimer(ConnectionID)
-                case cancelTimers(idle: [ConnectionID], pingPong: [ConnectionID], backoff: [ConnectionID])
+                case scheduleKeepAliveAndIdleTimeoutTimer(ConnectionID, on: EventLoop)
+                case cancelKeepAliveAndIdleTimeoutTimer(ConnectionID)
+                case cancelTimers(idle: [ConnectionID], keepAlive: [ConnectionID], backoff: [ConnectionID])
                 case none
             }
         }
@@ -297,18 +297,18 @@ public final class ConnectionPool<
             case .scheduleBackoffTimer(let connectionID, backoff: let backoff, on: let eventLoop):
                 self.locked.connection = .scheduleBackoffTimer(connectionID, backoff: backoff, on: eventLoop)
             case .scheduleKeepAliveTimer(let connectionID, on: let eventLoop):
-                self.locked.connection = .schedulePingTimer(connectionID, on: eventLoop)
+                self.locked.connection = .scheduleKeepAliveTimer(connectionID, on: eventLoop)
             case .cancelKeepAliveTimer(let connectionID):
-                self.locked.connection = .cancelPingTimer(connectionID)
-            case .closeConnection(let connection, let cancelPingPongTimer):
-                if cancelPingPongTimer {
-                    self.locked.connection = .cancelPingTimer(connection.id)
+                self.locked.connection = .cancelKeepAliveTimer(connectionID)
+            case .closeConnection(let connection, let cancelKeepAliveTimer):
+                if cancelKeepAliveTimer {
+                    self.locked.connection = .cancelKeepAliveTimer(connection.id)
                 }
                 self.unlocked.connection = .closeConnection(connection)
             case .scheduleKeepAliveAndIdleTimeoutTimer(let connectionID, on: let eventLoop):
-                self.locked.connection = .schedulePingAndIdleTimeoutTimer(connectionID, on: eventLoop)
+                self.locked.connection = .scheduleKeepAliveAndIdleTimeoutTimer(connectionID, on: eventLoop)
             case .cancelKeepAliveAndIdleTimeoutTimer(let connectionID):
-                self.locked.connection = .cancelPingAndIdleTimeoutTimer(connectionID)
+                self.locked.connection = .cancelKeepAliveAndIdleTimeoutTimer(connectionID)
             case .scheduleIdleTimeoutTimer(let connectionID, on: let eventLoop):
                 self.locked.connection = .scheduleIdleTimeoutTimer(connectionID, on: eventLoop)
             case .cancelIdleTimeoutTimer(let connectionID):
@@ -317,9 +317,9 @@ public final class ConnectionPool<
                 self.unlocked.connection = .runKeepAlive(connection)
             case .shutdown(let shutdown):
                 let idleTimers = shutdown.connections.compactMap { $0.cancelIdleTimer ? $0.connection.id : nil }
-                let pingPongTimers = shutdown.connections.compactMap { $0.cancelPingPongTimer ? $0.connection.id : nil }
+                let keepAliveTimers = shutdown.connections.compactMap { $0.cancelKeepAliveTimer ? $0.connection.id : nil }
                 let backoffTimers = shutdown.backoffTimersToCancel
-                self.locked.connection = .cancelTimers(idle: idleTimers, pingPong: pingPongTimers, backoff: backoffTimers)
+                self.locked.connection = .cancelTimers(idle: idleTimers, keepAlive: keepAliveTimers, backoff: backoffTimers)
                 self.unlocked.connection = .closeConnections(shutdown.connections.map { $0.connection })
             case .shutdownComplete(let promise):
                 self.unlocked.connection = .shutdownComplete(promise)
@@ -348,18 +348,18 @@ public final class ConnectionPool<
         case .scheduleBackoffTimer(let connectionID, backoff: let backoff, on: let eventLoop):
             self.scheduleConnectionStartBackoffTimer(connectionID, backoff, on: eventLoop)
 
-        case .schedulePingTimer(let connectionID, on: let eventLoop):
-            self.schedulePingTimerForConnection(connectionID, on: eventLoop)
+        case .scheduleKeepAliveTimer(let connectionID, on: let eventLoop):
+            self.scheduleKeepAliveTimerForConnection(connectionID, on: eventLoop)
 
-        case .cancelPingTimer(let connectionID):
-            self.cancelPingTimerForConnection(connectionID)
+        case .cancelKeepAliveTimer(let connectionID):
+            self.cancelKeepAliveTimerForConnection(connectionID)
 
-        case .schedulePingAndIdleTimeoutTimer(let connectionID, on: let eventLoop):
-            self.schedulePingTimerForConnection(connectionID, on: eventLoop)
+        case .scheduleKeepAliveAndIdleTimeoutTimer(let connectionID, on: let eventLoop):
+            self.scheduleKeepAliveTimerForConnection(connectionID, on: eventLoop)
             self.scheduleIdleTimeoutTimerForConnection(connectionID, on: eventLoop)
 
-        case .cancelPingAndIdleTimeoutTimer(let connectionID):
-            self.cancelPingTimerForConnection(connectionID)
+        case .cancelKeepAliveAndIdleTimeoutTimer(let connectionID):
+            self.cancelKeepAliveTimerForConnection(connectionID)
             self.cancelIdleTimeoutTimerForConnection(connectionID)
 
         case .scheduleIdleTimeoutTimer(let connectionID, on: let eventLoop):
@@ -373,9 +373,9 @@ public final class ConnectionPool<
                 self.cancelConnectionStartBackoffTimer(connectionID)
             }
 
-        case .cancelTimers(let idleTimers, let pingPongTimers, let backoffTimers):
+        case .cancelTimers(let idleTimers, let keepAliveTimers, let backoffTimers):
             idleTimers.forEach { self.cancelIdleTimeoutTimerForConnection($0) }
-            pingPongTimers.forEach { self.cancelPingTimerForConnection($0) }
+            keepAliveTimers.forEach { self.cancelKeepAliveTimerForConnection($0) }
             backoffTimers.forEach { self.cancelConnectionStartBackoffTimer($0) }
 
         case .none:
@@ -503,25 +503,25 @@ public final class ConnectionPool<
         cancelTimer.cancel()
     }
 
-    private func schedulePingTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
+    private func scheduleKeepAliveTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
         let scheduled = eventLoop.scheduleTask(in: self.keepAliveBehavior.keepAliveFrequency!) {
             // there might be a race between a cancelTimer call and the triggering
             // of this scheduled task. both want to acquire the lock
             self.modifyStateAndRunActions { stateMachine in
-                if self._pingTimer.removeValue(forKey: connectionID) != nil {
+                if self._keepAliveTimer.removeValue(forKey: connectionID) != nil {
                     // The timer still exists. State Machines assumes it is alive
-                    return stateMachine.connectionPingTimerTriggered(connectionID, on: eventLoop)
+                    return stateMachine.connectionKeepAliveTimerTriggered(connectionID, on: eventLoop)
                 }
                 return .none()
             }
         }
 
-        assert(self._pingTimer[connectionID] == nil)
-        self._pingTimer[connectionID] = scheduled
+        assert(self._keepAliveTimer[connectionID] == nil)
+        self._keepAliveTimer[connectionID] = scheduled
     }
 
-    private func cancelPingTimerForConnection(_ connectionID: ConnectionID) {
-        guard let cancelTimer = self._pingTimer.removeValue(forKey: connectionID) else {
+    private func cancelKeepAliveTimerForConnection(_ connectionID: ConnectionID) {
+        guard let cancelTimer = self._keepAliveTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have an idle timer for connection \(connectionID) at this point.")
         }
         cancelTimer.cancel()
@@ -587,7 +587,7 @@ public final class ConnectionPool<
                 self.metricsDelegate.keepAliveSucceeded(id: connection.id)
 
                 self.modifyStateAndRunActions { stateMachine in
-                    stateMachine.connectionPingPongDone(connection)
+                    stateMachine.connectionKeepAliveDone(connection)
                 }
             case .failure(let error):
                 self.metricsDelegate.keepAliveFailed(id: connection.id, error: error)

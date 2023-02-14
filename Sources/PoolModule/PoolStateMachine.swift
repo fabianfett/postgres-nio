@@ -72,11 +72,11 @@ struct PoolStateMachine<
         struct Shutdown: Equatable {
             struct ConnectionToClose: Equatable {
                 var cancelIdleTimer: Bool
-                var cancelPingPongTimer: Bool
+                var cancelKeepAliveTimer: Bool
                 var connection: Connection
 
                 static func ==(lhs: Self, rhs: Self) -> Bool {
-                    lhs.cancelIdleTimer == rhs.cancelIdleTimer && lhs.cancelPingPongTimer == rhs.cancelPingPongTimer && lhs.connection === rhs.connection
+                    lhs.cancelIdleTimer == rhs.cancelIdleTimer && lhs.cancelKeepAliveTimer == rhs.cancelKeepAliveTimer && lhs.connection === rhs.connection
                 }
             }
 
@@ -102,7 +102,7 @@ struct PoolStateMachine<
         case scheduleKeepAliveAndIdleTimeoutTimer(Connection.ID, on: EventLoop)
         case cancelKeepAliveAndIdleTimeoutTimer(Connection.ID)
 
-        case closeConnection(Connection, cancelPingPongTimer: Bool)
+        case closeConnection(Connection, cancelKeepAliveTimer: Bool)
         case shutdown(Shutdown)
         case shutdownComplete(EventLoopPromise<Void>)
 
@@ -126,7 +126,7 @@ struct PoolStateMachine<
                 return lhs == rhs
             case (.cancelIdleTimeoutTimer(let lhs), .cancelIdleTimeoutTimer(let rhs)):
                 return lhs == rhs
-            case (.closeConnection(let lhsConn, cancelPingPongTimer: let lhsCancel), .closeConnection(let rhsConn, cancelPingPongTimer: let rhsCancel)):
+            case (.closeConnection(let lhsConn, cancelKeepAliveTimer: let lhsCancel), .closeConnection(let rhsConn, cancelKeepAliveTimer: let rhsCancel)):
                 return lhsConn === rhsConn && lhsCancel == rhsCancel
             case (.shutdown(let lhs), .shutdown(let rhs)):
                 return lhs == rhs
@@ -453,30 +453,30 @@ struct PoolStateMachine<
         }
     }
 
-    mutating func connectionPingTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
+    mutating func connectionKeepAliveTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
         precondition(self.configuration.keepAlive)
         precondition(self.requestQueue.isEmpty)
 
-        guard let connection = self.connections[.init(eventLoop)]!.pingPongIfIdle(connectionID) else {
+        guard let connection = self.connections[.init(eventLoop)]!.keepAliveIfIdle(connectionID) else {
             return .none()
         }
         return .init(request: .none, connection: .runKeepAlive(connection))
     }
 
-    mutating func connectionPingPongDone(_ connection: Connection) -> Action {
+    mutating func connectionKeepAliveDone(_ connection: Connection) -> Action {
         precondition(self.configuration.keepAlive)
         let eventLoopID = EventLoopID(connection.eventLoop)
-        let (index, idleContext) = self.connections[eventLoopID]!.pingPongDone(connection.id)
+        let (index, idleContext) = self.connections[eventLoopID]!.keepAliveSucceeded(connection.id)
         return self.handleIdleConnection(eventLoopID, index: index, idleContext: idleContext)
     }
 
     mutating func connectionIdleTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
         precondition(self.requestQueue.isEmpty)
 
-        guard let (connection, cancelPingPongTimer) = self.connections[.init(eventLoop)]!.closeConnectionIfIdle(connectionID) else {
+        guard let (connection, cancelKeepAliveTimer) = self.connections[.init(eventLoop)]!.closeConnectionIfIdle(connectionID) else {
             return .none()
         }
-        return .init(request: .none, connection: .closeConnection(connection, cancelPingPongTimer: cancelPingPongTimer))
+        return .init(request: .none, connection: .closeConnection(connection, cancelKeepAliveTimer: cancelKeepAliveTimer))
     }
 
     mutating func connectionClosed(_ connection: Connection) -> Action {
@@ -487,7 +487,7 @@ struct PoolStateMachine<
     struct CleanupAction {
         struct ConnectionToDrop {
             var connection: Connection
-            var pingTimer: Bool
+            var keepAliveTimer: Bool
             var idleTimer: Bool
         }
 
@@ -561,7 +561,7 @@ struct PoolStateMachine<
 
         case .overflow:
             let connection = self.connections[eventLoopID]!.closeConnection(at: index)
-            return .init(request: .none, connection: .closeConnection(connection, cancelPingPongTimer: false))
+            return .init(request: .none, connection: .closeConnection(connection, cancelKeepAliveTimer: false))
         }
     }
 }

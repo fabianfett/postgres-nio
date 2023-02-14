@@ -101,13 +101,13 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssertEqual(releasedContext.use, .demand)
         XCTAssertEqual(connections.stats, .init(idle: 1))
 
-        guard let pingPongConnection = connections.pingPongIfIdle(newConnection.id) else {
+        guard let pingPongConnection = connections.keepAliveIfIdle(newConnection.id) else {
             return XCTFail("Expected to get a connection for ping pong")
         }
         XCTAssert(newConnection === pingPongConnection)
-        XCTAssertEqual(connections.stats, .init(pingpong: 1))
+        XCTAssertEqual(connections.stats, .init(runningKeepAlive: 1))
 
-        let (_, pingPongContext) = connections.pingPongDone(newConnection.id)
+        let (_, pingPongContext) = connections.keepAliveSucceeded(newConnection.id)
         XCTAssertEqual(pingPongContext.hasBecomeIdle, false)
         XCTAssertEqual(releasedContext.use, .demand)
         XCTAssertEqual(connections.stats, .init(idle: 1))
@@ -262,13 +262,13 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssertEqual(establishedConnectionContext.use, .persisted)
         XCTAssertEqual(connections.stats, .init(idle: 1))
 
-        guard let pingConnection = connections.pingPongIfIdle(newConnection.id) else {
+        guard let pingConnection = connections.keepAliveIfIdle(newConnection.id) else {
             return XCTFail("Expected to get a connection")
         }
         XCTAssert(newConnection === pingConnection)
-        XCTAssertEqual(connections.stats, .init(pingpong: 1))
+        XCTAssertEqual(connections.stats, .init(runningKeepAlive: 1))
 
-        let (_, afterPingIdleContext) = connections.pingPongDone(pingConnection.id)
+        let (_, afterPingIdleContext) = connections.keepAliveSucceeded(pingConnection.id)
         XCTAssertEqual(afterPingIdleContext.hasBecomeIdle, false)
         XCTAssertEqual(afterPingIdleContext.use, .persisted)
         XCTAssertEqual(connections.stats, .init(idle: 1))
