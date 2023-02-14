@@ -1,6 +1,7 @@
-@testable import PostgresNIO
-import XCTest
+import NIOCore
 import NIOEmbedded
+import XCTest
+@testable import PoolModule
 
 final class PoolStateMachineTests: XCTestCase {
     var configuration = PoolConfiguration()
@@ -10,6 +11,7 @@ final class PoolStateMachineTests: XCTestCase {
         self.configuration.minimumConnectionCount = 2
         self.configuration.maximumConnectionSoftLimit = 4
         self.configuration.maximumConnectionHardLimit = 6
+        self.configuration.keepAlive = true
     }
 
     func testHappyPath() {
@@ -25,11 +27,11 @@ final class PoolStateMachineTests: XCTestCase {
         }
         XCTAssert(connections.contains(where: { $0.id == leasedConnection.id }))
 
-        XCTAssertEqual(leaseAction.connection, .cancelPingTimer(leasedConnection.id))
+        XCTAssertEqual(leaseAction.connection, .cancelKeepAliveTimer(leasedConnection.id))
 
         let releaseAction = stateMachine.releaseConnection(leasedConnection)
         XCTAssertEqual(releaseAction.request, .none)
-        XCTAssertEqual(releaseAction.connection, .schedulePingTimer(leasedConnection.id, on: leasedConnection.eventLoop))
+        XCTAssertEqual(releaseAction.connection, .scheduleKeepAliveTimer(leasedConnection.id, on: leasedConnection.eventLoop))
     }
 
     func testMoreConnectionsAreCreated() {
@@ -45,7 +47,7 @@ final class PoolStateMachineTests: XCTestCase {
                 return XCTFail("Unexpected request action")
             }
             XCTAssert(connections.contains(where: { $0.id == leasedConnection.id }))
-            XCTAssertEqual(leaseAction.connection, .cancelPingTimer(leasedConnection.id))
+            XCTAssertEqual(leaseAction.connection, .cancelKeepAliveTimer(leasedConnection.id))
         }
 
         let connRequests = (0..<4).compactMap { (_) -> (TestPoolStateMachine.ConnectionRequest, TestRequest)? in
@@ -98,7 +100,7 @@ extension TestPoolStateMachine {
             let newConnection = TestConnection(request: request)
             let connectionEstablishedAction = stateMachine.connectionEstablished(newConnection)
             XCTAssertEqual(connectionEstablishedAction.request, .none, file: file, line: line)
-            guard case .schedulePingTimer(newConnection.id, on: _) = connectionEstablishedAction.connection else {
+            guard case .scheduleKeepAliveTimer(newConnection.id, on: _) = connectionEstablishedAction.connection else {
                 XCTFail("Expected schedule ping timer connection action")
                 return nil
             }

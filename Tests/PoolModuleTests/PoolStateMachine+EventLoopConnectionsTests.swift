@@ -1,6 +1,7 @@
 import XCTest
+import NIOCore
 import NIOEmbedded
-@testable import PostgresNIO
+@testable import PoolModule
 
 typealias TestPoolStateMachine = PoolStateMachine<TestConnection, ConnectionIDGenerator, TestConnection.ID, TestRequest, TestRequest.ID>
 
@@ -89,7 +90,7 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssertEqual(connections.stats, .init(idle: 1))
         XCTAssertEqual(connections.soonAvailable, 0)
 
-        guard case .leasedConnection(let leasedConnection) = connections.leaseConnectionOrSoonAvailableConnectionCount() else {
+        guard case .leasedConnection(let leasedConnection, .demand) = connections.leaseConnectionOrSoonAvailableConnectionCount() else {
             return XCTFail("Expected to lease a connection")
         }
         XCTAssert(newConnection === leasedConnection)

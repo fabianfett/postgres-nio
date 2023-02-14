@@ -1,4 +1,9 @@
 import NIOCore
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 protocol ConnectionRequest {
     associatedtype ID: Hashable
@@ -10,11 +15,20 @@ protocol ConnectionRequest {
     var deadline: NIODeadline { get }
 }
 
+public struct PoolError: Error, Hashable {
+    private enum Base: Error, Hashable {
+        case requestTimeout
+        case requestCancelled
+        case poolShutdown
+    }
 
-enum PoolError: Error, Hashable {
-    case requestTimeout
-    case requestCancelled
-    case poolShutdown
+    private let base: Base
+
+    private init(_ base: Base) { self.base = base }
+
+    public static let requestTimeout = PoolError(.requestTimeout)
+    public static let requestCancelled = PoolError(.requestCancelled)
+    public static let poolShutdown = PoolError(.poolShutdown)
 }
 
 struct PoolConfiguration {
@@ -78,15 +92,15 @@ struct PoolStateMachine<
         case createConnection(ConnectionRequest)
         case scheduleBackoffTimer(Connection.ID, backoff: TimeAmount, on: EventLoop)
 
-        case schedulePingTimer(Connection.ID, on: EventLoop)
-        case cancelPingTimer(Connection.ID)
-        case runPingPong(Connection)
+        case scheduleKeepAliveTimer(Connection.ID, on: EventLoop)
+        case cancelKeepAliveTimer(Connection.ID)
+        case runKeepAlive(Connection)
 
         case scheduleIdleTimeoutTimer(Connection.ID, on: EventLoop)
         case cancelIdleTimeoutTimer(Connection.ID)
 
-        case schedulePingAndIdleTimeoutTimer(Connection.ID, on: EventLoop)
-        case cancelPingAndIdleTimeoutTimer(Connection.ID)
+        case scheduleKeepAliveAndIdleTimeoutTimer(Connection.ID, on: EventLoop)
+        case cancelKeepAliveAndIdleTimeoutTimer(Connection.ID)
 
         case closeConnection(Connection, cancelPingPongTimer: Bool)
         case shutdown(Shutdown)
@@ -100,15 +114,15 @@ struct PoolStateMachine<
                 return lhs == rhs
             case (.scheduleBackoffTimer(let lhsConnID, let lhsBackoff, on: let lhsEL), .scheduleBackoffTimer(let rhsConnID, let rhsBackoff, on: let rhsEL)):
                 return lhsConnID == rhsConnID && lhsBackoff == rhsBackoff && lhsEL === rhsEL
-            case (.schedulePingTimer(let lhsConnID, on: let lhsEL), .schedulePingTimer(let rhsConnID, on: let rhsEL)):
+            case (.scheduleKeepAliveTimer(let lhsConnID, on: let lhsEL), .scheduleKeepAliveTimer(let rhsConnID, on: let rhsEL)):
                 return lhsConnID == rhsConnID && lhsEL === rhsEL
-            case (.cancelPingTimer(let lhs), .cancelPingTimer(let rhs)):
+            case (.cancelKeepAliveTimer(let lhs), .cancelKeepAliveTimer(let rhs)):
                 return lhs == rhs
-            case (.runPingPong(let lhs), .runPingPong(let rhs)):
+            case (.runKeepAlive(let lhs), .runKeepAlive(let rhs)):
                 return lhs === rhs
-            case (.schedulePingAndIdleTimeoutTimer(let lhsConnID, on: let lhsEL), .schedulePingAndIdleTimeoutTimer(let rhsConnID, on: let rhsEL)):
+            case (.scheduleKeepAliveAndIdleTimeoutTimer(let lhsConnID, on: let lhsEL), .scheduleKeepAliveAndIdleTimeoutTimer(let rhsConnID, on: let rhsEL)):
                 return lhsConnID == rhsConnID && lhsEL === rhsEL
-            case (.cancelPingAndIdleTimeoutTimer(let lhs), .cancelPingAndIdleTimeoutTimer(let rhs)):
+            case (.cancelKeepAliveAndIdleTimeoutTimer(let lhs), .cancelKeepAliveAndIdleTimeoutTimer(let rhs)):
                 return lhs == rhs
             case (.cancelIdleTimeoutTimer(let lhs), .cancelIdleTimeoutTimer(let rhs)):
                 return lhs == rhs
@@ -259,6 +273,21 @@ struct PoolStateMachine<
     }
 
     mutating func leaseConnection(_ request: Request) -> Action {
+        func connectionActionForLease(_ connectionID: ConnectionID, use: EventLoopConnections.ConnectionUse) -> ConnectionAction {
+            switch (self.configuration.keepAlive, use) {
+            case (true, .demand):
+                return .cancelKeepAliveAndIdleTimeoutTimer(connectionID)
+            case (false, .demand):
+                return .cancelIdleTimeoutTimer(connectionID)
+            case (true, .persisted):
+                return .cancelKeepAliveTimer(connectionID)
+            case (false, .persisted):
+                return .none
+            case (_, .overflow):
+                preconditionFailure("Overflow connections should never be available on fast turn around")
+            }
+        }
+
         switch self.poolState {
         case .running:
             break
@@ -272,10 +301,10 @@ struct PoolStateMachine<
 
         // check if the preferredEL has an idle connection
         if let preferredEL = request.preferredEventLoop {
-            if let connection = self.connections[preferredEL.id]!.leaseConnection() {
+            if let (connection, use) = self.connections[preferredEL.id]!.leaseConnection() {
                 return .init(
                     request: .leaseConnection(request, connection, cancelTimeout: false),
-                    connection: .cancelPingTimer(connection.id)
+                    connection: connectionActionForLease(connection.id, use: use)
                 )
             }
         }
@@ -288,11 +317,11 @@ struct PoolStateMachine<
             switch connections.leaseConnectionOrSoonAvailableConnectionCount() {
             case .startingCount(let count):
                 soonAvailable += count
-            case .leasedConnection(let connection):
+            case .leasedConnection(let connection, let use):
                 self.connections[key] = connections
                 return .init(
                     request: .leaseConnection(request, connection, cancelTimeout: false),
-                    connection: .cancelPingTimer(connection.id)
+                    connection: connectionActionForLease(connection.id, use: use)
                 )
             }
         }
@@ -431,7 +460,7 @@ struct PoolStateMachine<
         guard let connection = self.connections[.init(eventLoop)]!.pingPongIfIdle(connectionID) else {
             return .none()
         }
-        return .init(request: .none, connection: .runPingPong(connection))
+        return .init(request: .none, connection: .runKeepAlive(connection))
     }
 
     mutating func connectionPingPongDone(_ connection: Connection) -> Action {
@@ -509,9 +538,9 @@ struct PoolStateMachine<
             case (true, false):
                 return .scheduleIdleTimeoutTimer(connectionID, on: idleContext.eventLoop)
             case (false, true):
-                return .schedulePingTimer(connectionID, on: idleContext.eventLoop)
+                return .scheduleKeepAliveTimer(connectionID, on: idleContext.eventLoop)
             case (true, true):
-                return .schedulePingAndIdleTimeoutTimer(connectionID, on: idleContext.eventLoop)
+                return .scheduleKeepAliveAndIdleTimeoutTimer(connectionID, on: idleContext.eventLoop)
             }
         }
 

@@ -1,7 +1,7 @@
 import DequeModule
 import NIOCore
 import NIOConcurrencyHelpers
-import PostgresNIO
+import PoolModule
 
 // Sendability enforced through the lock
 final class MockConnection: PooledConnection, @unchecked Sendable {
@@ -84,7 +84,7 @@ final class MockConnectionFactory: ConnectionFactory {
     let lock = NIOConcurrencyHelpers.NIOLock()
     var _attempts = Deque<(Int, EventLoop, EventLoopPromise<MockConnection>)>()
 
-    func makeConnection(on eventLoop: EventLoop, id: Int, backgroundLogger: Logger) -> EventLoopFuture<MockConnection> {
+    func makeConnection(on eventLoop: EventLoop, id: Int) -> EventLoopFuture<MockConnection> {
         let promise = eventLoop.makePromise(of: MockConnection.self)
         self.lock.withLock {
             self._attempts.append((id, eventLoop, promise))
@@ -115,7 +115,7 @@ final class MockPingPongBehavior: ConnectionKeepAliveBehavior {
         self.keepAliveFrequency = keepAliveFrequency
     }
 
-    func runKeepAlive(for connection: MockConnection, logger: Logger) -> EventLoopFuture<Void> {
+    func runKeepAlive(for connection: MockConnection) -> EventLoopFuture<Void> {
         preconditionFailure()
     }
 }

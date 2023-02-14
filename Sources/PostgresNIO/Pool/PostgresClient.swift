@@ -1,6 +1,7 @@
 import NIOCore
 import NIOSSL
 import Logging
+import PoolModule
 
 public final class PostgresClient: Sendable {
 
@@ -114,7 +115,7 @@ public final class PostgresClient: Sendable {
         PostgresConnection.ID,
         ConnectionIDGenerator,
         PostgresKeepAliveBehavor,
-        NoOpConnectionPoolMetrics<PostgresConnection.ID>
+        PostgresClientMetrics
     >
 
     let pool: Pool
@@ -122,12 +123,11 @@ public final class PostgresClient: Sendable {
     public init(configuration: Configuration, eventLoopGroup: EventLoopGroup, backgroundLogger: Logger) throws {
         self.pool = try ConnectionPool(
             configuration: .init(configuration),
-            idGenerator: .init(),
-            factory: PostgresConnectionFactory(configuration: .init(configuration)),
-            keepAliveBehavior: .init(configuration),
-            metricsDelegate: .init(connectionIDType: PostgresConnection.ID.self),
-            eventLoopGroup: eventLoopGroup,
-            backgroundLogger: backgroundLogger
+            idGenerator: ConnectionIDGenerator(),
+            factory: PostgresConnectionFactory(configuration: .init(configuration), logger: backgroundLogger),
+            keepAliveBehavior: .init(configuration, logger: backgroundLogger),
+            metricsDelegate: .init(logger: backgroundLogger),
+            eventLoopGroup: eventLoopGroup
         )
     }
 
@@ -140,13 +140,13 @@ public final class PostgresClient: Sendable {
         file: String = #file,
         line: Int = #line
     ) async throws -> PostgresRowSequence {
-        let connection = try await self.pool.leaseConnection(logger: logger)
+        let connection = try await self.pool.leaseConnection()
 
         return try await connection.query(query, logger: logger)
     }
 
     public func withConnection<Result>(logger: Logger, _ closure: (PostgresConnection) async throws -> Result) async throws -> Result {
-        let connection = try await self.pool.leaseConnection(logger: logger)
+        let connection = try await self.pool.leaseConnection()
 
         defer { self.pool.releaseConnection(connection) }
 
@@ -158,7 +158,7 @@ public final class PostgresClient: Sendable {
         preferredEventLoop: EventLoop,
         _ closure: @escaping @Sendable (PostgresConnection) -> EventLoopFuture<Result>
     ) -> EventLoopFuture<Result> {
-        self.pool.withConnection(logger: logger, preferredEventLoop: preferredEventLoop, closure)
+        self.pool.withConnection(preferredEventLoop: preferredEventLoop, closure)
     }
 
     public func shutdown(graceful: Bool) async throws {
@@ -182,21 +182,25 @@ public final class PostgresClient: Sendable {
 
 struct PostgresConnectionFactory: ConnectionFactory {
     let configuration: PostgresConnection.Configuration
+    let logger: Logger
 
-    init(configuration: PostgresConnection.Configuration) {
+    init(configuration: PostgresConnection.Configuration, logger: Logger) {
         self.configuration = configuration
+        self.logger = logger
     }
 
     func makeConnection(
         on eventLoop: EventLoop,
-        id: PostgresConnection.ID,
-        backgroundLogger: Logger
+        id: PostgresConnection.ID
     ) -> EventLoopFuture<PostgresConnection> {
-        PostgresConnection.connect(
+        var connectionLogger = self.logger
+        connectionLogger[postgresMetadataKey: .connectionID] = "\(id)"
+
+        return PostgresConnection.connect(
             on: eventLoop,
             configuration: self.configuration,
             id: id,
-            logger: backgroundLogger
+            logger: connectionLogger
         )
     }
 }
@@ -204,14 +208,23 @@ struct PostgresConnectionFactory: ConnectionFactory {
 struct PostgresKeepAliveBehavor: ConnectionKeepAliveBehavior {
     var keepAliveFrequency: TimeAmount?
     var query: PostgresQuery
+    var logger: Logger
 
-    init(keepAliveFrequency: TimeAmount?) {
+    init(keepAliveFrequency: TimeAmount?, logger: Logger) {
         self.keepAliveFrequency = keepAliveFrequency
         self.query = "SELECT 1;"
+        self.logger = logger
     }
 
-    func runKeepAlive(for connection: PostgresConnection, logger: Logger) -> EventLoopFuture<Void> {
-        connection.query(self.query, logger: logger).map { _ in }
+    func runKeepAlive(for connection: PostgresConnection) -> EventLoopFuture<Void> {
+        connection.query(self.query, logger: self.logger).map { _ in }
+    }
+}
+
+extension PostgresKeepAliveBehavor {
+    init(_ config: PostgresClient.Configuration, logger: Logger) {
+        self = .init(keepAliveFrequency: config.pool.keepAliveFrequency, logger: logger)
+        self.query = config.pool.keepAliveQuery
     }
 }
 
@@ -252,14 +265,6 @@ extension PostgresConnection.Configuration.TLS {
     }
 }
 
-
-extension PostgresKeepAliveBehavor {
-    init(_ config: PostgresClient.Configuration) {
-        self = .init(keepAliveFrequency: config.pool.keepAliveFrequency)
-        self.query = config.pool.keepAliveQuery
-    }
-}
-
 extension PostgresConnection: PooledConnection {
     public func close() {
         self.close(promise: nil)
@@ -280,6 +285,8 @@ extension PoolError {
             psqlError = lastConnectError ?? PSQLError.timeoutError
         case .requestCancelled:
             psqlError = PSQLError.queryCancelled
+        default:
+            return self
         }
         return psqlError
     }

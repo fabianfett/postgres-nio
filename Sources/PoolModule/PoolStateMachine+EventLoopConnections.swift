@@ -468,7 +468,7 @@ extension PoolStateMachine {
         /// Lease a connection, if an idle connection is available.
         ///
         /// - Returns: A connection to execute a request on.
-        mutating func leaseConnection() -> Connection? {
+        mutating func leaseConnection() -> (Connection, ConnectionUse)? {
             if self.stats.idle == 0 {
                 return nil
             }
@@ -477,19 +477,21 @@ extension PoolStateMachine {
                 preconditionFailure("Stats and actual count are of.")
             }
 
+            let use = self.getConnectionUse(index: index)
+
             self.stats.idle -= 1
             self.stats.leased += 1
-            return self.connections[index].lease()
+            return (self.connections[index].lease(), use)
         }
 
         enum LeasedConnectionOrStartingCount {
-            case leasedConnection(Connection)
+            case leasedConnection(Connection, ConnectionUse)
             case startingCount(UInt16)
         }
 
         mutating func leaseConnectionOrSoonAvailableConnectionCount() -> LeasedConnectionOrStartingCount {
-            if let connection = self.leaseConnection() {
-                return .leasedConnection(connection)
+            if let (connection, use) = self.leaseConnection() {
+                return .leasedConnection(connection, use)
             }
             return .startingCount(self.stats.soonAvailable)
         }
@@ -656,19 +658,22 @@ extension PoolStateMachine {
 
         // MARK: - Private functions -
 
-        private func generateIdleConnectionContextForConnection(at index: Int, hasBecomeIdle: Bool) -> IdleConnectionContext {
-            precondition(self.connections[index].isIdle)
-            let use: ConnectionUse
+        private func getConnectionUse(index: Int) -> ConnectionUse {
             switch index {
             case 0..<self.minimumConcurrentConnections:
-                use = .persisted
+                return .persisted
             case self.minimumConcurrentConnections..<self.maximumConcurrentConnectionSoftLimit:
-                use = .demand
+                return .demand
             case self.maximumConcurrentConnectionSoftLimit...:
-                use = .overflow
+                return .overflow
             default:
                 preconditionFailure()
             }
+        }
+
+        private func generateIdleConnectionContextForConnection(at index: Int, hasBecomeIdle: Bool) -> IdleConnectionContext {
+            precondition(self.connections[index].isIdle)
+            let use = self.getConnectionUse(index: index)
             return IdleConnectionContext(eventLoop: self.eventLoop, use: use, hasBecomeIdle: hasBecomeIdle)
         }
 

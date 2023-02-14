@@ -11,6 +11,7 @@ let package = Package(
     ],
     products: [
         .library(name: "PostgresNIO", targets: ["PostgresNIO"]),
+        .library(name: "_PoolModule", targets: ["PoolModule"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.0.2"),
@@ -24,6 +25,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "PostgresNIO", dependencies: [
+            .target(name: "PoolModule"),
             .product(name: "Atomics", package: "swift-atomics"),
             .product(name: "Crypto", package: "swift-crypto"),
             .product(name: "DequeModule", package: "swift-collections"),
@@ -37,10 +39,23 @@ let package = Package(
             .product(name: "NIOSSL", package: "swift-nio-ssl"),
             .product(name: "NIOFoundationCompat", package: "swift-nio"),
         ]),
+        .target(name: "PoolModule", dependencies: [
+            .product(name: "Atomics", package: "swift-atomics"),
+            .product(name: "DequeModule", package: "swift-collections"),
+            .product(name: "NIOCore", package: "swift-nio"),
+            .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
+        ]),
         .testTarget(name: "PostgresNIOTests", dependencies: [
             .target(name: "PostgresNIO"),
             .product(name: "NIOEmbedded", package: "swift-nio"),
             .product(name: "NIOTestUtils", package: "swift-nio"),
+        ]),
+        .testTarget(name: "PoolModuleTests", dependencies: [
+            .target(name: "PoolModule"),
+            .product(name: "DequeModule", package: "swift-collections"),
+            .product(name: "NIOCore", package: "swift-nio"),
+            .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
+            .product(name: "NIOEmbedded", package: "swift-nio"),
         ]),
         .testTarget(name: "IntegrationTests", dependencies: [
             .target(name: "PostgresNIO"),

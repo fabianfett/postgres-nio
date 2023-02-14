@@ -13,17 +13,7 @@ final class PostgresClientTests: XCTestCase {
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 8)
         defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
 
-        var clientConfig = PostgresClient.Configuration()
-        clientConfig.pool.minimumConnectionCount = 0
-        clientConfig.pool.maximumConnectionSoftLimit = 8*4
-        clientConfig.pool.maximumConnectionHardLimit = 12*4
-        clientConfig.pool.keepAliveFrequency = .seconds(5)
-        clientConfig.pool.connectionIdleTimeout = .seconds(15)
-
-        clientConfig.server.host = "postgres-nio-tests.vsl"
-        clientConfig.authentication.username = "postgres"
-        clientConfig.authentication.database = "postgres"
-        clientConfig.authentication.password = "password"
+        var clientConfig = PostgresClient.Configuration.makeTestConfiguration()
 
         var maybeClient: PostgresClient?
         XCTAssertNoThrow(maybeClient = try PostgresClient(configuration: clientConfig, eventLoopGroup: eventLoopGroup, backgroundLogger: logger))
@@ -65,23 +55,20 @@ final class PostgresClientTests: XCTestCase {
     }
 }
 
-struct MockConnectionFactory: ConnectionFactory {
-    let configuration: PostgresConnection.Configuration
+extension PostgresClient.Configuration {
+    static func makeTestConfiguration() -> PostgresClient.Configuration {
+        var clientConfig = PostgresClient.Configuration()
+        clientConfig.pool.minimumConnectionCount = 0
+        clientConfig.pool.maximumConnectionSoftLimit = 8*4
+        clientConfig.pool.maximumConnectionHardLimit = 12*4
+        clientConfig.pool.keepAliveFrequency = .seconds(5)
+        clientConfig.pool.connectionIdleTimeout = .seconds(15)
 
-    init(configuration: PostgresConnection.Configuration) {
-        self.configuration = configuration
-    }
+        clientConfig.server.host = env("POSTGRES_HOSTNAME") ?? "localhost"
+        clientConfig.authentication.username = env("POSTGRES_USER") ?? "test_username"
+        clientConfig.authentication.database = env("POSTGRES_DB") ?? "test_database"
+        clientConfig.authentication.password = env("POSTGRES_PASSWORD") ?? "test_password"
 
-    func makeConnection(
-        on eventLoop: EventLoop,
-        id: PostgresConnection.ID,
-        backgroundLogger: Logger
-    ) -> EventLoopFuture<PostgresConnection> {
-        PostgresConnection.connect(
-            on: eventLoop,
-            configuration: self.configuration,
-            id: id,
-            logger: backgroundLogger
-        )
+        return clientConfig
     }
 }

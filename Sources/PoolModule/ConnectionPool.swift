@@ -1,21 +1,12 @@
 import NIOCore
 import NIOConcurrencyHelpers
-import Logging
 
 public protocol ConnectionKeepAliveBehavior: Sendable {
     associatedtype Connection: PooledConnection
 
     var keepAliveFrequency: TimeAmount? { get }
 
-    func runKeepAlive(for connection: Connection, logger: Logger) -> EventLoopFuture<Void>
-}
-
-public protocol ConnectionKeepAliveAsyncBehavior: Sendable {
-    associatedtype Connection: PooledConnection
-
-    var keepAliveFrequency: TimeAmount? { get }
-
-    func runKeepAlive(for connection: Connection, logger: Logger) async throws
+    func runKeepAlive(for connection: Connection) -> EventLoopFuture<Void>
 }
 
 public protocol ConnectionFactory {
@@ -24,8 +15,7 @@ public protocol ConnectionFactory {
 
     func makeConnection(
         on eventLoop: EventLoop,
-        id: ConnectionID,
-        backgroundLogger: Logger
+        id: ConnectionID
     ) -> EventLoopFuture<Connection>
 }
 
@@ -76,19 +66,17 @@ public final class ConnectionPool<
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
     KeepAliveBehavior: ConnectionKeepAliveBehavior,
     MetricsDelegate: ConnectionPoolMetricsDelegate
->: @unchecked Sendable where Factory.Connection == Connection, Factory.ConnectionID == ConnectionID, Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, KeepAliveBehavior.Connection == Connection {
+>: @unchecked Sendable where Factory.Connection == Connection, Factory.ConnectionID == ConnectionID, Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, KeepAliveBehavior.Connection == Connection, MetricsDelegate.ConnectionID == ConnectionID {
     
     typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID>
 
-    let eventLoopGroup: EventLoopGroup
+    public let eventLoopGroup: EventLoopGroup
 
     let factory: Factory
 
     let keepAliveBehavior: KeepAliveBehavior
 
     let metricsDelegate: MetricsDelegate
-
-    let backgroundLogger: Logger
 
     let configuration: ConnectionPoolConfiguration
 
@@ -104,7 +92,7 @@ public final class ConnectionPool<
     /// The connection backoff timers. Protected by the stateLock
     private var _backoffTimer = [ConnectionID: Scheduled<Void>]()
 
-    private let requestIDGenerator = PostgresNIO.ConnectionIDGenerator()
+    private let requestIDGenerator = PoolModule.ConnectionIDGenerator()
 
     public init(
         configuration: ConnectionPoolConfiguration,
@@ -112,14 +100,12 @@ public final class ConnectionPool<
         factory: Factory,
         keepAliveBehavior: KeepAliveBehavior,
         metricsDelegate: MetricsDelegate,
-        eventLoopGroup: EventLoopGroup,
-        backgroundLogger: Logger
+        eventLoopGroup: EventLoopGroup
     ) {
         self.eventLoopGroup = eventLoopGroup
         self.factory = factory
         self.keepAliveBehavior = keepAliveBehavior
         self.metricsDelegate = metricsDelegate
-        self.backgroundLogger = backgroundLogger
         self.configuration = configuration
         self._stateMachine = PoolStateMachine(
             configuration: .init(configuration, keepAliveBehavior: keepAliveBehavior),
@@ -134,7 +120,7 @@ public final class ConnectionPool<
         }
     }
 
-    public func leaseConnection(logger: Logger) async throws -> Connection {
+    public func leaseConnection() async throws -> Connection {
         let requestID = self.requestIDGenerator.next()
 
         let connection = try await withTaskCancellationHandler {
@@ -160,15 +146,12 @@ public final class ConnectionPool<
             }
         }
 
-        logger.debug("leased connection", metadata: [
-            PSQLLoggingMetadata.Key.connectionID.rawValue: "\(connection.id)",
-            PSQLLoggingMetadata.Key.requestID.rawValue: "\(requestID)",
-        ])
+        self.metricsDelegate.connectionLeased(id: connection.id)
 
         return connection
     }
 
-    public func leaseConnection(logger: Logger, preferredEventLoop: EventLoop) -> EventLoopFuture<Connection> {
+    public func leaseConnection(preferredEventLoop: EventLoop) -> EventLoopFuture<Connection> {
         let requestID = self.requestIDGenerator.next()
 
         let promise = preferredEventLoop.makePromise(of: Connection.self)
@@ -188,9 +171,7 @@ public final class ConnectionPool<
     }
 
     public func releaseConnection(_ connection: Connection) {
-        self.backgroundLogger.debug("connection released", metadata: [
-            PSQLLoggingMetadata.Key.connectionID.rawValue: "\(connection.id)",
-        ])
+        self.metricsDelegate.connectionReleased(id: connection.id)
 
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.releaseConnection(connection)
@@ -198,12 +179,11 @@ public final class ConnectionPool<
     }
 
     public func withConnection<Result>(
-        logger: Logger,
         preferredEventLoop: EventLoop,
         _ closure: @escaping @Sendable (Connection) -> EventLoopFuture<Result>
     ) -> EventLoopFuture<Result> {
 
-        return self.leaseConnection(logger: logger, preferredEventLoop: preferredEventLoop).flatMap { connection in
+        return self.leaseConnection(preferredEventLoop: preferredEventLoop).flatMap { connection in
             let returnedFuture = closure(connection)
             returnedFuture.whenComplete { _ in
                 self.releaseConnection(connection)
@@ -238,7 +218,7 @@ public final class ConnectionPool<
                 case createConnection(StateMachine.ConnectionRequest)
                 case closeConnection(Connection)
                 case closeConnections([Connection])
-                case runPingPong(Connection)
+                case runKeepAlive(Connection)
                 case shutdownComplete(EventLoopPromise<Void>)
                 case none
             }
@@ -316,25 +296,25 @@ public final class ConnectionPool<
                 self.unlocked.connection = .createConnection(connectionRequest)
             case .scheduleBackoffTimer(let connectionID, backoff: let backoff, on: let eventLoop):
                 self.locked.connection = .scheduleBackoffTimer(connectionID, backoff: backoff, on: eventLoop)
-            case .schedulePingTimer(let connectionID, on: let eventLoop):
+            case .scheduleKeepAliveTimer(let connectionID, on: let eventLoop):
                 self.locked.connection = .schedulePingTimer(connectionID, on: eventLoop)
-            case .cancelPingTimer(let connectionID):
+            case .cancelKeepAliveTimer(let connectionID):
                 self.locked.connection = .cancelPingTimer(connectionID)
             case .closeConnection(let connection, let cancelPingPongTimer):
                 if cancelPingPongTimer {
                     self.locked.connection = .cancelPingTimer(connection.id)
                 }
                 self.unlocked.connection = .closeConnection(connection)
-            case .schedulePingAndIdleTimeoutTimer(let connectionID, on: let eventLoop):
+            case .scheduleKeepAliveAndIdleTimeoutTimer(let connectionID, on: let eventLoop):
                 self.locked.connection = .schedulePingAndIdleTimeoutTimer(connectionID, on: eventLoop)
-            case .cancelPingAndIdleTimeoutTimer(let connectionID):
+            case .cancelKeepAliveAndIdleTimeoutTimer(let connectionID):
                 self.locked.connection = .cancelPingAndIdleTimeoutTimer(connectionID)
             case .scheduleIdleTimeoutTimer(let connectionID, on: let eventLoop):
                 self.locked.connection = .scheduleIdleTimeoutTimer(connectionID, on: eventLoop)
             case .cancelIdleTimeoutTimer(let connectionID):
                 self.locked.connection = .cancelIdleTimeoutTimer(connectionID)
-            case .runPingPong(let connection):
-                self.unlocked.connection = .runPingPong(connection)
+            case .runKeepAlive(let connection):
+                self.unlocked.connection = .runKeepAlive(connection)
             case .shutdown(let shutdown):
                 let idleTimers = shutdown.connections.compactMap { $0.cancelIdleTimer ? $0.connection.id : nil }
                 let pingPongTimers = shutdown.connections.compactMap { $0.cancelPingPongTimer ? $0.connection.id : nil }
@@ -435,23 +415,8 @@ public final class ConnectionPool<
         case .closeConnections(let connections):
             connections.forEach { self.closeConnection($0) }
 
-        case .runPingPong(let connection):
-            self.backgroundLogger.debug("run ping pong", metadata: [
-                PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
-            ])
-
-            self.keepAliveBehavior.runKeepAlive(for: connection, logger: self.backgroundLogger).whenComplete { result in
-                switch result {
-                case .success:
-                    self.modifyStateAndRunActions { stateMachine in
-                        stateMachine.connectionPingPongDone(connection)
-                    }
-                case .failure(let error):
-                    self.modifyStateAndRunActions { stateMachine in
-                        stateMachine.connectionClosed(connection)
-                    }
-                }
-            }
+        case .runKeepAlive(let connection):
+            self.runKeepAlive(connection)
 
         case .shutdownComplete(let promise):
             promise.succeed(())
@@ -464,6 +429,7 @@ public final class ConnectionPool<
     private func runUnlockedRequestAction(_ action: Actions.RequestAction.Unlocked) {
         switch action {
         case .leaseConnection(let request, let connection):
+            self.metricsDelegate.connectionLeased(id: connection.id)
             request.succeed(connection)
         case .failRequest(let request, let error):
             request.fail(error)
@@ -475,22 +441,17 @@ public final class ConnectionPool<
     }
 
     private func makeConnection(for request: StateMachine.ConnectionRequest) {
-        self.backgroundLogger.debug("Creating new connection", metadata: [
-            .connectionID: "\(request.connectionID)",
-        ])
+        self.metricsDelegate.startedConnecting(id: request.connectionID)
 
         self.factory.makeConnection(
             on: request.eventLoop,
-            id: request.connectionID,
-            backgroundLogger: self.backgroundLogger
+            id: request.connectionID
         ).whenComplete { result in
             switch result {
             case .success(let connection):
                 self.connectionEstablished(connection)
                 connection.onClose {
-                    self.modifyStateAndRunActions { stateMachine in
-                        stateMachine.connectionClosed(connection)
-                    }
+                    self.connectionClosed(connection)
                 }
             case .failure(let error):
                 self.connectionEstablishFailed(error, for: request)
@@ -499,9 +460,8 @@ public final class ConnectionPool<
     }
 
     private func connectionEstablished(_ connection: Connection) {
-        self.backgroundLogger.debug("Connection established", metadata: [
-            .connectionID: "\(connection.id)"
-        ])
+        self.metricsDelegate.connectSucceeded(id: connection.id)
+
         self.modifyStateAndRunActions { stateMachine in
             self._lastConnectError = nil
             return stateMachine.connectionEstablished(connection)
@@ -509,9 +469,8 @@ public final class ConnectionPool<
     }
 
     private func connectionEstablishFailed(_ error: Error, for request: StateMachine.ConnectionRequest) {
-        self.backgroundLogger.debug("Connection creation failed", metadata: [
-            .connectionID: "\(request.connectionID)", .error: "\(error)"
-        ])
+        self.metricsDelegate.connectFailed(id: request.connectionID, error: error)
+
         self.modifyStateAndRunActions { stateMachine in
             self._lastConnectError = error
             return stateMachine.connectionEstablishFailed(error, for: request)
@@ -545,9 +504,6 @@ public final class ConnectionPool<
     }
 
     private func schedulePingTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
-        self.backgroundLogger.trace("Schedule connection ping timer", metadata: [
-            .connectionID: "\(connectionID)",
-        ])
         let scheduled = eventLoop.scheduleTask(in: self.keepAliveBehavior.keepAliveFrequency!) {
             // there might be a race between a cancelTimer call and the triggering
             // of this scheduled task. both want to acquire the lock
@@ -565,9 +521,6 @@ public final class ConnectionPool<
     }
 
     private func cancelPingTimerForConnection(_ connectionID: ConnectionID) {
-        self.backgroundLogger.trace("Cancel connection ping timer", metadata: [
-            .connectionID: "\(connectionID)",
-        ])
         guard let cancelTimer = self._pingTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have an idle timer for connection \(connectionID) at this point.")
         }
@@ -575,9 +528,6 @@ public final class ConnectionPool<
     }
 
     private func scheduleIdleTimeoutTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
-        self.backgroundLogger.trace("Schedule idle connection timeout timer", metadata: [
-            .connectionID: "\(connectionID)",
-        ])
         let scheduled = eventLoop.scheduleTask(in: self.configuration.idleTimeout) {
             // there might be a race between a cancelTimer call and the triggering
             // of this scheduled task. both want to acquire the lock
@@ -595,9 +545,6 @@ public final class ConnectionPool<
     }
 
     private func cancelIdleTimeoutTimerForConnection(_ connectionID: ConnectionID) {
-        self.backgroundLogger.trace("Cancel idle connection timeout", metadata: [
-            .connectionID: "\(connectionID)",
-        ])
         guard let cancelTimer = self._idleTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have an idle timer for connection \(connectionID) at this point.")
         }
@@ -609,10 +556,6 @@ public final class ConnectionPool<
         _ timeAmount: TimeAmount,
         on eventLoop: EventLoop
     ) {
-        self.backgroundLogger.trace("Schedule connection creation backoff timer", metadata: [
-            .connectionID: "\(connectionID)",
-        ])
-
         let scheduled = eventLoop.scheduleTask(in: timeAmount) {
             // there might be a race between a backoffTimer and the pool shutting down.
             self.modifyStateAndRunActions { stateMachine in
@@ -635,12 +578,40 @@ public final class ConnectionPool<
         backoffTimer.cancel()
     }
 
+    private func runKeepAlive(_ connection: Connection) {
+        self.metricsDelegate.keepAliveTriggered(id: connection.id)
+
+        self.keepAliveBehavior.runKeepAlive(for: connection).whenComplete { result in
+            switch result {
+            case .success:
+                self.metricsDelegate.keepAliveSucceeded(id: connection.id)
+
+                self.modifyStateAndRunActions { stateMachine in
+                    stateMachine.connectionPingPongDone(connection)
+                }
+            case .failure(let error):
+                self.metricsDelegate.keepAliveFailed(id: connection.id, error: error)
+
+                self.modifyStateAndRunActions { stateMachine in
+                    stateMachine.connectionClosed(connection)
+                }
+            }
+        }
+    }
+
     private func closeConnection(_ connection: Connection) {
-        self.backgroundLogger.debug("close connection", metadata: [
-            PSQLConnection.LoggerMetaDataKey.connectionID.rawValue: "\(connection.id)",
-        ])
+        self.metricsDelegate.connectionClosing(id: connection.id)
 
         connection.close()
+    }
+
+    private func connectionClosed(_ connection: Connection) {
+        // TODO: Can we get access to a potential connection error here?
+        self.metricsDelegate.connectionClosed(id: connection.id, error: nil)
+
+        self.modifyStateAndRunActions { stateMachine in
+            stateMachine.connectionClosed(connection)
+        }
     }
 }
 

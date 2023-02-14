@@ -22,6 +22,12 @@ public protocol ConnectionPoolMetricsDelegate {
 
     func connectionReleased(id: ConnectionID)
 
+    func keepAliveTriggered(id: ConnectionID)
+
+    func keepAliveSucceeded(id: ConnectionID)
+
+    func keepAliveFailed(id: ConnectionID, error: Error)
+
     /// The remote peer is quiescing the connection: no new streams will be created on it. The
     /// connection will eventually be closed and removed from the pool.
     func connectionClosing(id: ConnectionID)
@@ -33,7 +39,9 @@ public protocol ConnectionPoolMetricsDelegate {
     func requestQueueDepthChanged(_ newDepth: Int)
 }
 
-extension ConnectionPoolMetricsDelegate {
+struct NoOpConnectionPoolMetrics<ConnectionID: Hashable>: ConnectionPoolMetricsDelegate {
+    init(connectionIDType: ConnectionID.Type) {}
+
     func startedConnecting(id: ConnectionID) {}
 
     func connectFailed(id: ConnectionID, error: Error) {}
@@ -44,13 +52,15 @@ extension ConnectionPoolMetricsDelegate {
 
     func connectionReleased(id: ConnectionID) {}
 
+    func keepAliveTriggered(id: ConnectionID) {}
+
+    func keepAliveSucceeded(id: ConnectionID) {}
+
+    func keepAliveFailed(id: ConnectionID, error: Error) {}
+
     func connectionClosing(id: ConnectionID) {}
 
     func connectionClosed(id: ConnectionID, error: Error?) {}
 
     func requestQueueDepthChanged(_ newDepth: Int) {}
-}
-
-struct NoOpConnectionPoolMetrics<ConnectionID: Hashable>: ConnectionPoolMetricsDelegate {
-    init(connectionIDType: ConnectionID.Type) {}
 }

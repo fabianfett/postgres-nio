@@ -1,12 +1,10 @@
-@testable import PostgresNIO
+@testable import PoolModule
 import XCTest
-import Logging
 import NIOEmbedded
 
 final class ConnectionPoolTests: XCTestCase {
 
     func testHappyPath() {
-        let logger = Logger(label: "pool-test")
         let eventLoop = EmbeddedEventLoop()
         let factory = MockConnectionFactory()
 
@@ -19,8 +17,7 @@ final class ConnectionPoolTests: XCTestCase {
             factory: factory,
             keepAliveBehavior: MockPingPongBehavior(keepAliveFrequency: nil),
             metricsDelegate: NoOpConnectionPoolMetrics(connectionIDType: MockConnection.ID.self),
-            eventLoopGroup: eventLoop,
-            backgroundLogger: logger
+            eventLoopGroup: eventLoop
         )
 
         let createdConnection = factory.succeedNextAttempt()
@@ -29,7 +26,7 @@ final class ConnectionPoolTests: XCTestCase {
         // the same connection is reused 1000 times
 
         for _ in 0..<1000 {
-            let connectionFuture = pool.leaseConnection(logger: logger, preferredEventLoop: eventLoop)
+            let connectionFuture = pool.leaseConnection(preferredEventLoop: eventLoop)
             var leasedConnection: MockConnection?
             XCTAssertNil(factory.succeedNextAttempt())
             XCTAssertNoThrow(leasedConnection = try connectionFuture.wait())
@@ -40,8 +37,6 @@ final class ConnectionPoolTests: XCTestCase {
                 pool.releaseConnection(leasedConnection)
             }
         }
-
-
     }
 
 }
