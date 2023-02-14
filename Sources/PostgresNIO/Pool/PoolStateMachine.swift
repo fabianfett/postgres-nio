@@ -1,5 +1,15 @@
 import NIOCore
 
+protocol ConnectionRequest {
+    associatedtype ID: Hashable
+
+    var id: ID { get }
+
+    var preferredEventLoop: EventLoop? { get }
+
+    var deadline: NIODeadline { get }
+}
+
 
 enum PoolError: Error, Hashable {
     case requestTimeout

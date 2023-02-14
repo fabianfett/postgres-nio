@@ -659,12 +659,15 @@ extension PoolStateMachine {
         private func generateIdleConnectionContextForConnection(at index: Int, hasBecomeIdle: Bool) -> IdleConnectionContext {
             precondition(self.connections[index].isIdle)
             let use: ConnectionUse
-            if index < self.minimumConcurrentConnections {
+            switch index {
+            case 0..<self.minimumConcurrentConnections:
                 use = .persisted
-            } else if index < self.maximumConcurrentConnectionSoftLimit {
+            case self.minimumConcurrentConnections..<self.maximumConcurrentConnectionSoftLimit:
                 use = .demand
-            } else {
+            case self.maximumConcurrentConnectionSoftLimit...:
                 use = .overflow
+            default:
+                preconditionFailure()
             }
             return IdleConnectionContext(eventLoop: self.eventLoop, use: use, hasBecomeIdle: hasBecomeIdle)
         }

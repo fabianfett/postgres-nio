@@ -10,6 +10,14 @@ public protocol ConnectionKeepAliveBehavior: Sendable {
     func runKeepAlive(for connection: Connection, logger: Logger) -> EventLoopFuture<Void>
 }
 
+public protocol ConnectionKeepAliveAsyncBehavior: Sendable {
+    associatedtype Connection: PooledConnection
+
+    var keepAliveFrequency: TimeAmount? { get }
+
+    func runKeepAlive(for connection: Connection, logger: Logger) async throws
+}
+
 public protocol ConnectionFactory {
     associatedtype ConnectionID: Hashable
     associatedtype Connection
@@ -59,16 +67,6 @@ public protocol ConnectionIDGeneratorProtocol {
     associatedtype ID: Hashable
 
     func next() -> ID
-}
-
-public protocol ConnectionRequest {
-    associatedtype ID: Hashable
-
-    var id: ID { get }
-
-    var preferredEventLoop: EventLoop? { get }
-
-    var deadline: NIODeadline { get }
 }
 
 public final class ConnectionPool<
