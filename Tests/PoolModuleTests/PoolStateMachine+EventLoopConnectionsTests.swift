@@ -27,7 +27,8 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
             generator: self.idGenerator,
             minimumConcurrentConnections: 4,
             maximumConcurrentConnectionSoftLimit: 4,
-            maximumConcurrentConnectionHardLimit: 4
+            maximumConcurrentConnectionHardLimit: 4,
+            keepAliveReducesAvailableStreams: true
         )
 
         var requests = [TestPoolStateMachine.ConnectionRequest]()
@@ -49,7 +50,7 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         for request in requests {
             let newConnection = TestConnection(request: request)
             let (_, context) = connections.newConnectionEstablished(newConnection)
-            XCTAssertEqual(context.hasBecomeIdle, true)
+            XCTAssertEqual(context.info, .idle(availableStreams: 1, newIdle: true))
             XCTAssertEqual(context.use, .persisted)
             connected += 1
             XCTAssertEqual(connections.stats, .init(connecting: 4 - connected, idle: connected))
@@ -67,7 +68,8 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
             generator: self.idGenerator,
             minimumConcurrentConnections: 0,
             maximumConcurrentConnectionSoftLimit: 4,
-            maximumConcurrentConnectionHardLimit: 4
+            maximumConcurrentConnectionHardLimit: 4,
+            keepAliveReducesAvailableStreams: true
         )
 
         var requests = [TestPoolStateMachine.ConnectionRequest]()
@@ -85,7 +87,7 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
 
         let newConnection = TestConnection(request: request)
         let (_, establishedContext) = connections.newConnectionEstablished(newConnection)
-        XCTAssertEqual(establishedContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedContext.info, .idle(availableStreams: 1, newIdle: true))
         XCTAssertEqual(establishedContext.use, .demand)
         XCTAssertEqual(connections.stats, .init(idle: 1))
         XCTAssertEqual(connections.soonAvailable, 0)
@@ -96,8 +98,8 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssert(newConnection === leasedConnection)
         XCTAssertEqual(connections.stats, .init(leased: 1))
 
-        let (_, releasedContext) = connections.releaseConnection(leasedConnection.id)
-        XCTAssertEqual(releasedContext.hasBecomeIdle, true)
+        let (_, releasedContext) = connections.releaseConnection(leasedConnection.id, streams: 1)
+        XCTAssertEqual(releasedContext.info, .idle(availableStreams: 1, newIdle: true))
         XCTAssertEqual(releasedContext.use, .demand)
         XCTAssertEqual(connections.stats, .init(idle: 1))
 
@@ -107,8 +109,10 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssert(newConnection === pingPongConnection)
         XCTAssertEqual(connections.stats, .init(runningKeepAlive: 1))
 
-        let (_, pingPongContext) = connections.keepAliveSucceeded(newConnection.id)
-        XCTAssertEqual(pingPongContext.hasBecomeIdle, false)
+        guard let (_, pingPongContext) = connections.keepAliveSucceeded(newConnection.id) else {
+            return XCTFail("Expected to get an AvailableContext")
+        }
+        XCTAssertEqual(pingPongContext.info, .idle(availableStreams: 1, newIdle: false))
         XCTAssertEqual(releasedContext.use, .demand)
         XCTAssertEqual(connections.stats, .init(idle: 1))
 
@@ -131,7 +135,8 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
             generator: self.idGenerator,
             minimumConcurrentConnections: 1,
             maximumConcurrentConnectionSoftLimit: 4,
-            maximumConcurrentConnectionHardLimit: 4
+            maximumConcurrentConnectionHardLimit: 4,
+            keepAliveReducesAvailableStreams: true
         )
 
         var requests = [TestPoolStateMachine.ConnectionRequest]()
@@ -158,7 +163,8 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
             generator: self.idGenerator,
             minimumConcurrentConnections: 2,
             maximumConcurrentConnectionSoftLimit: 4,
-            maximumConcurrentConnectionHardLimit: 4
+            maximumConcurrentConnectionHardLimit: 4,
+            keepAliveReducesAvailableStreams: true
         )
 
         var requests = [TestPoolStateMachine.ConnectionRequest]()
@@ -180,14 +186,14 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
 
         let newSecondConnection = TestConnection(request: secondRequest)
         let (_, establishedSecondConnectionContext) = connections.newConnectionEstablished(newSecondConnection)
-        XCTAssertEqual(establishedSecondConnectionContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedSecondConnectionContext.info, .idle(availableStreams: 1, newIdle: true))
         XCTAssertEqual(establishedSecondConnectionContext.use, .persisted)
         XCTAssertEqual(connections.stats, .init(connecting: 2, idle: 1))
         XCTAssertEqual(connections.soonAvailable, 2)
 
         let newThirdConnection = TestConnection(request: thirdRequest)
         let (_, establishedThirdConnectionContext) = connections.newConnectionEstablished(newThirdConnection)
-        XCTAssertEqual(establishedThirdConnectionContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedThirdConnectionContext.info, .idle(availableStreams: 1, newIdle: true))
         XCTAssertEqual(establishedThirdConnectionContext.use, .demand)
         XCTAssertEqual(connections.stats, .init(connecting: 1, idle: 2))
         XCTAssertEqual(connections.soonAvailable, 1)
@@ -209,7 +215,8 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
             generator: self.idGenerator,
             minimumConcurrentConnections: 0,
             maximumConcurrentConnectionSoftLimit: 4,
-            maximumConcurrentConnectionHardLimit: 4
+            maximumConcurrentConnectionHardLimit: 4,
+            keepAliveReducesAvailableStreams: true
         )
 
         guard let firstRequest = connections.createNewDemandConnectionIfPossible() else {
@@ -223,7 +230,7 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
 
         let newFirstConnection = TestConnection(request: firstRequest)
         let (_, establishedFirstConnectionContext) = connections.newConnectionEstablished(newFirstConnection)
-        XCTAssertEqual(establishedFirstConnectionContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedFirstConnectionContext.info, .idle(availableStreams: 1, newIdle: true))
         XCTAssertEqual(establishedFirstConnectionContext.use, .demand)
         XCTAssertEqual(connections.stats, .init(connecting: 1, idle: 1))
         XCTAssertEqual(connections.soonAvailable, 1)
@@ -244,7 +251,8 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
             generator: self.idGenerator,
             minimumConcurrentConnections: 1,
             maximumConcurrentConnectionSoftLimit: 4,
-            maximumConcurrentConnectionHardLimit: 4
+            maximumConcurrentConnectionHardLimit: 4,
+            keepAliveReducesAvailableStreams: true
         )
 
         var requests = [TestPoolStateMachine.ConnectionRequest]()
@@ -258,7 +266,7 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
 
         let newConnection = TestConnection(request: firstRequest)
         let (_, establishedConnectionContext) = connections.newConnectionEstablished(newConnection)
-        XCTAssertEqual(establishedConnectionContext.hasBecomeIdle, true)
+        XCTAssertEqual(establishedConnectionContext.info, .idle(availableStreams: 1, newIdle: true))
         XCTAssertEqual(establishedConnectionContext.use, .persisted)
         XCTAssertEqual(connections.stats, .init(idle: 1))
 
@@ -268,8 +276,10 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssert(newConnection === pingConnection)
         XCTAssertEqual(connections.stats, .init(runningKeepAlive: 1))
 
-        let (_, afterPingIdleContext) = connections.keepAliveSucceeded(pingConnection.id)
-        XCTAssertEqual(afterPingIdleContext.hasBecomeIdle, false)
+        guard let (_, afterPingIdleContext) = connections.keepAliveSucceeded(pingConnection.id) else {
+            return XCTFail("Expected to receive an AvailableContext")
+        }
+        XCTAssertEqual(afterPingIdleContext.info, .idle(availableStreams: 1, newIdle: false))
         XCTAssertEqual(afterPingIdleContext.use, .persisted)
         XCTAssertEqual(connections.stats, .init(idle: 1))
     }

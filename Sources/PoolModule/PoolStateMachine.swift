@@ -236,7 +236,8 @@ struct PoolStateMachine<
                 generator: generator,
                 minimumConcurrentConnections: minimumConnectionsPerEL + additionalMinimumConnection,
                 maximumConcurrentConnectionSoftLimit: maximumConnectionsPerELSoftLimit + additionalMaximumConnectionSoftLimit,
-                maximumConcurrentConnectionHardLimit: maximumConnectionsPerELHardLimit + additionalMaximumConnectionHardLimit
+                maximumConcurrentConnectionHardLimit: maximumConnectionsPerELHardLimit + additionalMaximumConnectionHardLimit,
+                keepAliveReducesAvailableStreams: true
             )
 
             self.connections[eventLoopID] = connection
@@ -376,11 +377,10 @@ struct PoolStateMachine<
         return .init(request: requestAction, connection: .none)
     }
 
-    mutating func releaseConnection(_ connection: Connection) -> Action {
+    mutating func releaseConnection(_ connection: Connection, streams: Int) -> Action {
         let eventLoopID = EventLoopID(connection.eventLoop)
-        let (index, idleContext) = self.connections[eventLoopID]!.releaseConnection(connection.id)
-
-        return self.handleIdleConnection(eventLoopID, index: index, idleContext: idleContext)
+        let (index, context) = self.connections[eventLoopID]!.releaseConnection(connection.id, streams: streams)
+        return self.handleAvailableConnection(eventLoopID, index: index, availableContext: context)
     }
 
     mutating func cancelRequest(id: RequestID) -> Action {
@@ -407,9 +407,8 @@ struct PoolStateMachine<
 
     mutating func connectionEstablished(_ connection: Connection) -> Action {
         let eventLoopID = EventLoopID(connection.eventLoop)
-        let (index, idleContext) = self.connections[eventLoopID]!.newConnectionEstablished(connection)
-
-        return self.handleIdleConnection(eventLoopID, index: index, idleContext: idleContext)
+        let (index, context) = self.connections[eventLoopID]!.newConnectionEstablished(connection)
+        return self.handleAvailableConnection(eventLoopID, index: index, availableContext: context)
     }
 
     mutating func connectionEstablishFailed(_ error: Error, for request: ConnectionRequest) -> Action {
@@ -450,8 +449,10 @@ struct PoolStateMachine<
     mutating func connectionKeepAliveDone(_ connection: Connection) -> Action {
         precondition(self.configuration.keepAlive)
         let eventLoopID = EventLoopID(connection.eventLoop)
-        let (index, idleContext) = self.connections[eventLoopID]!.keepAliveSucceeded(connection.id)
-        return self.handleIdleConnection(eventLoopID, index: index, idleContext: idleContext)
+        guard let (index, context) = self.connections[eventLoopID]!.keepAliveSucceeded(connection.id) else {
+            return .none()
+        }
+        return self.handleAvailableConnection(eventLoopID, index: index, availableContext: context)
     }
 
     mutating func connectionIdleTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
@@ -506,7 +507,11 @@ struct PoolStateMachine<
         }
     }
 
-    private mutating func handleIdleConnection(_ eventLoopID: EventLoopID, index: Int, idleContext: EventLoopConnections.IdleConnectionContext) -> Action {
+    private mutating func handleAvailableConnection(
+        _ eventLoopID: EventLoopID,
+        index: Int,
+        availableContext: EventLoopConnections.AvailableConnectionContext
+    ) -> Action {
         if let request = self.requestQueue.pop(for: eventLoopID) {
             let connection = self.connections[eventLoopID]!.leaseConnection(at: index)
             return .init(
@@ -520,15 +525,15 @@ struct PoolStateMachine<
             case (false, false):
                 return .none
             case (true, false):
-                return .scheduleIdleTimeoutTimer(connectionID, on: idleContext.eventLoop)
+                return .scheduleIdleTimeoutTimer(connectionID, on: availableContext.eventLoop)
             case (false, true):
-                return .scheduleKeepAliveTimer(connectionID, on: idleContext.eventLoop)
+                return .scheduleKeepAliveTimer(connectionID, on: availableContext.eventLoop)
             case (true, true):
-                return .scheduleKeepAliveAndIdleTimeoutTimer(connectionID, on: idleContext.eventLoop)
+                return .scheduleKeepAliveAndIdleTimeoutTimer(connectionID, on: availableContext.eventLoop)
             }
         }
 
-        switch idleContext.use {
+        switch availableContext.use {
         case .persisted:
             let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
             return .init(
@@ -538,9 +543,12 @@ struct PoolStateMachine<
 
         case .demand:
             let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
+            guard case .idle(availableStreams: _, let newIdle) = availableContext.info else {
+                preconditionFailure()
+            }
             return .init(
                 request: .none,
-                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: idleContext.hasBecomeIdle)
+                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: newIdle)
             )
 
         case .overflow:

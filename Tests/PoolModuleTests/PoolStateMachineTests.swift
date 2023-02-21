@@ -29,7 +29,7 @@ final class PoolStateMachineTests: XCTestCase {
 
         XCTAssertEqual(leaseAction.connection, .cancelKeepAliveTimer(leasedConnection.id))
 
-        let releaseAction = stateMachine.releaseConnection(leasedConnection)
+        let releaseAction = stateMachine.releaseConnection(leasedConnection, streams: 1)
         XCTAssertEqual(releaseAction.request, .none)
         XCTAssertEqual(releaseAction.connection, .scheduleKeepAliveTimer(leasedConnection.id, on: leasedConnection.eventLoop))
     }

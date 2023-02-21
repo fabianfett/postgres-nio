@@ -174,7 +174,7 @@ public final class ConnectionPool<
         self.metricsDelegate.connectionReleased(id: connection.id)
 
         self.modifyStateAndRunActions { stateMachine in
-            stateMachine.releaseConnection(connection)
+            stateMachine.releaseConnection(connection, streams: 1)
         }
     }
 
