@@ -5,16 +5,6 @@ import Darwin
 import Glibc
 #endif
 
-protocol ConnectionRequest {
-    associatedtype ID: Hashable
-
-    var id: ID { get }
-
-    var preferredEventLoop: EventLoop? { get }
-
-    var deadline: NIODeadline { get }
-}
-
 struct PoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
@@ -36,7 +26,7 @@ struct PoolStateMachine<
     Connection: PooledConnection,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
     ConnectionID,
-    Request: ConnectionRequest,
+    Request: ConnectionRequestProtocol,
     RequestID
 > where Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, RequestID == Request.ID {
 

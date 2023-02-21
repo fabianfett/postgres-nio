@@ -15,6 +15,7 @@ final class ConnectionPoolTests: XCTestCase {
             configuration: config,
             idGenerator: ConnectionIDGenerator(),
             factory: factory,
+            requestType: ConnectionRequest<MockConnection>.self,
             keepAliveBehavior: MockPingPongBehavior(keepAliveFrequency: nil),
             metricsDelegate: NoOpConnectionPoolMetrics(connectionIDType: MockConnection.ID.self),
             eventLoopGroup: eventLoop

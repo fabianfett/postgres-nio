@@ -50,7 +50,7 @@ final class PoolStateMachineTests: XCTestCase {
             XCTAssertEqual(leaseAction.connection, .cancelKeepAliveTimer(leasedConnection.id))
         }
 
-        let connRequests = (0..<4).compactMap { (_) -> (TestPoolStateMachine.ConnectionRequest, TestRequest)? in
+        let connRequests = (0..<4).compactMap { (_) -> (TestPoolStateMachine.ConnectionRequest, TestRequest<TestConnection>)? in
             let leaseRequest = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
             let leaseAction = stateMachine.leaseConnection(leaseRequest)
             XCTAssertEqual(leaseAction.request, .scheduleRequestTimeout(for: leaseRequest, on: self.eventLoop))

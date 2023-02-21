@@ -59,15 +59,38 @@ public protocol ConnectionIDGeneratorProtocol {
     func next() -> ID
 }
 
+public protocol ConnectionRequestProtocol {
+    associatedtype ID: Hashable
+    associatedtype Connection: PooledConnection
+
+    var id: ID { get }
+
+    var preferredEventLoop: EventLoop? { get }
+
+    var deadline: NIODeadline { get }
+
+    func complete(with: Result<Connection, PoolError>)
+}
+
 public final class ConnectionPool<
     Factory: ConnectionFactory,
     Connection: PooledConnection,
     ConnectionID: Hashable,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
+    Request: ConnectionRequestProtocol,
+    RequestID: Hashable,
     KeepAliveBehavior: ConnectionKeepAliveBehavior,
     MetricsDelegate: ConnectionPoolMetricsDelegate
->: @unchecked Sendable where Factory.Connection == Connection, Factory.ConnectionID == ConnectionID, Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, KeepAliveBehavior.Connection == Connection, MetricsDelegate.ConnectionID == ConnectionID {
-    
+>: @unchecked Sendable where
+    Factory.Connection == Connection,
+    Factory.ConnectionID == ConnectionID,
+    Connection.ID == ConnectionID,
+    ConnectionIDGenerator.ID == ConnectionID,
+    Request.Connection == Connection,
+    Request.ID == RequestID,
+    KeepAliveBehavior.Connection == Connection,
+    MetricsDelegate.ConnectionID == ConnectionID
+{
     typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID>
 
     public let eventLoopGroup: EventLoopGroup
@@ -98,6 +121,7 @@ public final class ConnectionPool<
         configuration: ConnectionPoolConfiguration,
         idGenerator: ConnectionIDGenerator,
         factory: Factory,
+        requestType: Request.Type,
         keepAliveBehavior: KeepAliveBehavior,
         metricsDelegate: MetricsDelegate,
         eventLoopGroup: EventLoopGroup
@@ -120,75 +144,23 @@ public final class ConnectionPool<
         }
     }
 
-    public func leaseConnection() async throws -> Connection {
-        let requestID = self.requestIDGenerator.next()
-
-        let connection = try await withTaskCancellationHandler {
-            if Task.isCancelled {
-                throw CancellationError()
-            }
-
-            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Connection, Error>) in
-                let request = Request(
-                    id: requestID,
-                    deadline: .now() + .seconds(10),
-                    continuation: continuation,
-                    preferredEventLoop: nil
-                )
-
-                self.modifyStateAndRunActions { stateMachine in
-                    stateMachine.leaseConnection(request)
-                }
-            }
-        } onCancel: {
-            self.modifyStateAndRunActions { stateMachine in
-                stateMachine.cancelRequest(id: requestID)
-            }
-        }
-
-        self.metricsDelegate.connectionLeased(id: connection.id)
-
-        return connection
-    }
-
-    public func leaseConnection(preferredEventLoop: EventLoop) -> EventLoopFuture<Connection> {
-        let requestID = self.requestIDGenerator.next()
-
-        let promise = preferredEventLoop.makePromise(of: Connection.self)
-
-        let request = Request(
-            id: requestID,
-            deadline: .now() + .seconds(10),
-            promise: promise,
-            preferredEventLoop: preferredEventLoop
-        )
-
-        self.modifyStateAndRunActions { stateMachine in
-            stateMachine.leaseConnection(request)
-        }
-
-        return promise.futureResult
-    }
-
-    public func releaseConnection(_ connection: Connection) {
+    public func releaseConnection(_ connection: Connection, streams: Int = 1) {
         self.metricsDelegate.connectionReleased(id: connection.id)
 
         self.modifyStateAndRunActions { stateMachine in
-            stateMachine.releaseConnection(connection, streams: 1)
+            stateMachine.releaseConnection(connection, streams: streams)
         }
     }
 
-    public func withConnection<Result>(
-        preferredEventLoop: EventLoop,
-        _ closure: @escaping @Sendable (Connection) -> EventLoopFuture<Result>
-    ) -> EventLoopFuture<Result> {
+    public func leaseConnection(_ request: Request) {
+        self.modifyStateAndRunActions { stateMachine in
+            stateMachine.leaseConnection(request)
+        }
+    }
 
-        return self.leaseConnection(preferredEventLoop: preferredEventLoop).flatMap { connection in
-            let returnedFuture = closure(connection)
-            returnedFuture.whenComplete { _ in
-                self.releaseConnection(connection)
-            }
-            return returnedFuture
+    public func cancelConnectionRequest(_ requestID: RequestID) {
+        self.modifyStateAndRunActions { stateMachine in
+            stateMachine.cancelRequest(id: requestID)
         }
     }
 
@@ -241,8 +213,8 @@ public final class ConnectionPool<
         enum RequestAction {
             enum Unlocked {
                 case leaseConnection(Request, Connection)
-                case failRequest(Request, Error)
-                case failRequests([Request], Error)
+                case failRequest(Request, PoolError)
+                case failRequests([Request], PoolError)
                 case none
             }
 
@@ -430,11 +402,11 @@ public final class ConnectionPool<
         switch action {
         case .leaseConnection(let request, let connection):
             self.metricsDelegate.connectionLeased(id: connection.id)
-            request.succeed(connection)
+            request.complete(with: .success(connection))
         case .failRequest(let request, let error):
-            request.fail(error)
+            request.complete(with: .failure(error))
         case .failRequests(let requests, let error):
-            for request in requests { request.fail(error) }
+            for request in requests { request.complete(with: .failure(error)) }
         case .none:
             break
         }
@@ -611,67 +583,6 @@ public final class ConnectionPool<
 
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.connectionClosed(connection)
-        }
-    }
-}
-
-extension ConnectionPool {
-    struct Request: ConnectionRequest {
-        private enum AsyncReportingMechanism {
-            case continuation(CheckedContinuation<Connection, Error>)
-            case promise(EventLoopPromise<Connection>)
-        }
-
-        typealias ID = Int
-
-        var id: ID
-
-        var preferredEventLoop: NIOCore.EventLoop?
-
-        var deadline: NIOCore.NIODeadline
-
-        private var reportingMechanism: AsyncReportingMechanism
-
-        init(
-            id: Int,
-            deadline: NIOCore.NIODeadline,
-            continuation: CheckedContinuation<Connection, Error>,
-            preferredEventLoop: EventLoop?
-        ) {
-            self.id = id
-            self.deadline = deadline
-            self.preferredEventLoop = preferredEventLoop
-            self.reportingMechanism = .continuation(continuation)
-        }
-
-        init(
-            id: Int,
-            deadline: NIOCore.NIODeadline,
-            promise: EventLoopPromise<Connection>,
-            preferredEventLoop: EventLoop?
-        ) {
-            self.id = id
-            self.deadline = deadline
-            self.preferredEventLoop = preferredEventLoop
-            self.reportingMechanism = .promise(promise)
-        }
-
-        fileprivate func succeed(_ connection: Connection) {
-            switch self.reportingMechanism {
-            case .continuation(let continuation):
-                continuation.resume(returning: connection)
-            case .promise(let promise):
-                promise.succeed(connection)
-            }
-        }
-
-        fileprivate func fail(_ error: Error) {
-            switch self.reportingMechanism {
-            case .continuation(let continuation):
-                continuation.resume(throwing: error)
-            case .promise(let promise):
-                promise.fail(error)
-            }
         }
     }
 }

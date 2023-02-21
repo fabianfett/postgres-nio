@@ -114,6 +114,8 @@ public final class PostgresClient: Sendable {
         PostgresConnection,
         PostgresConnection.ID,
         ConnectionIDGenerator,
+        ConnectionRequest<PostgresConnection>,
+        ConnectionRequest.ID,
         PostgresKeepAliveBehavor,
         PostgresClientMetrics
     >

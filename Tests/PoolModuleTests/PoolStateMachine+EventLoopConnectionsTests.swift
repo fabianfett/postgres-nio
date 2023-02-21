@@ -3,7 +3,13 @@ import NIOCore
 import NIOEmbedded
 @testable import PoolModule
 
-typealias TestPoolStateMachine = PoolStateMachine<TestConnection, ConnectionIDGenerator, TestConnection.ID, TestRequest, TestRequest.ID>
+typealias TestPoolStateMachine = PoolStateMachine<
+    TestConnection,
+    ConnectionIDGenerator,
+    TestConnection.ID,
+    TestRequest<TestConnection>,
+    TestRequest<TestConnection>.ID
+>
 
 final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
     var eventLoop: EmbeddedEventLoop!
@@ -309,7 +315,7 @@ final class TestConnection: PooledConnection {
     }
 }
 
-final class TestRequest: ConnectionRequest, Equatable {
+final class TestRequest<Connection: PooledConnection>: ConnectionRequestProtocol, Equatable {
     struct ID: Hashable {
         var objectID: ObjectIdentifier
 
@@ -324,12 +330,26 @@ final class TestRequest: ConnectionRequest, Equatable {
 
     let deadline: NIODeadline
 
-    init(deadline: NIODeadline, preferredEventLoop: EventLoop?) {
+    init(deadline: NIODeadline, preferredEventLoop: EventLoop?, connectionType: Connection.Type) {
         self.deadline = deadline
         self.preferredEventLoop = preferredEventLoop
     }
 
     static func ==(lhs: TestRequest, rhs: TestRequest) -> Bool {
         lhs.id == rhs.id && lhs.preferredEventLoop === rhs.preferredEventLoop && lhs.deadline == rhs.deadline
+    }
+
+    func complete(with: Result<Connection, PoolError>) {
+
+    }
+}
+
+extension TestRequest where Connection == TestConnection {
+    convenience init(deadline: NIODeadline, preferredEventLoop: EventLoop?) {
+        self.init(
+            deadline: deadline,
+            preferredEventLoop: preferredEventLoop,
+            connectionType: TestConnection.self
+        )
     }
 }

@@ -187,7 +187,6 @@ extension PoolStateMachine {
             }
         }
 
-
         mutating func close() -> Connection {
             switch self.state {
             case .idle(let connection, maxStreams: _, keepAlive: _):
