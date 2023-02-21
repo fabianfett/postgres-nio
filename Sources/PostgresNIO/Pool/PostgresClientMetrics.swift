@@ -2,8 +2,6 @@ import PoolModule
 import Logging
 
 final class PostgresClientMetrics: ConnectionPoolMetricsDelegate {
-
-
     typealias ConnectionID = PostgresConnection.ID
 
     let logger: Logger
@@ -76,7 +74,4 @@ final class PostgresClientMetrics: ConnectionPoolMetricsDelegate {
     func requestQueueDepthChanged(_ newDepth: Int) {
 
     }
-
-
 }
-

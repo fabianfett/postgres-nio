@@ -15,37 +15,21 @@ protocol ConnectionRequest {
     var deadline: NIODeadline { get }
 }
 
-public struct PoolError: Error, Hashable {
-    private enum Base: Error, Hashable {
-        case requestTimeout
-        case requestCancelled
-        case poolShutdown
-    }
-
-    private let base: Base
-
-    private init(_ base: Base) { self.base = base }
-
-    public static let requestTimeout = PoolError(.requestTimeout)
-    public static let requestCancelled = PoolError(.requestCancelled)
-    public static let poolShutdown = PoolError(.poolShutdown)
-}
-
 struct PoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
     /// If the pool is mostly idle and the Redis servers close these idle connections,
     /// the `RedisConnectionPool` will initiate new outbound connections proactively to avoid the number of available connections dropping below this number.
-    public var minimumConnectionCount: Int = 0
+    var minimumConnectionCount: Int = 0
 
     /// The maximum number of connections to for this pool, to be preserved.
-    public var maximumConnectionSoftLimit: Int = 10
+    var maximumConnectionSoftLimit: Int = 10
 
-    public var maximumConnectionHardLimit: Int = 10
+    var maximumConnectionHardLimit: Int = 10
 
-    public var maxConsecutivePicksFromEventLoopQueue: UInt8 = 16
+    var maxConsecutivePicksFromEventLoopQueue: UInt8 = 16
 
-    public var keepAlive: Bool = false
+    var keepAlive: Bool = false
 }
 
 struct PoolStateMachine<

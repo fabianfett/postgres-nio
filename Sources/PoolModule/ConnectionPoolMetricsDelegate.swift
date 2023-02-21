@@ -39,28 +39,28 @@ public protocol ConnectionPoolMetricsDelegate {
     func requestQueueDepthChanged(_ newDepth: Int)
 }
 
-struct NoOpConnectionPoolMetrics<ConnectionID: Hashable>: ConnectionPoolMetricsDelegate {
-    init(connectionIDType: ConnectionID.Type) {}
+public struct NoOpConnectionPoolMetrics<ConnectionID: Hashable>: ConnectionPoolMetricsDelegate {
+    public init(connectionIDType: ConnectionID.Type) {}
 
-    func startedConnecting(id: ConnectionID) {}
+    public func startedConnecting(id: ConnectionID) {}
 
-    func connectFailed(id: ConnectionID, error: Error) {}
+    public func connectFailed(id: ConnectionID, error: Error) {}
 
-    func connectSucceeded(id: ConnectionID) {}
+    public func connectSucceeded(id: ConnectionID) {}
 
-    func connectionLeased(id: ConnectionID) {}
+    public func connectionLeased(id: ConnectionID) {}
 
-    func connectionReleased(id: ConnectionID) {}
+    public func connectionReleased(id: ConnectionID) {}
 
-    func keepAliveTriggered(id: ConnectionID) {}
+    public func keepAliveTriggered(id: ConnectionID) {}
 
-    func keepAliveSucceeded(id: ConnectionID) {}
+    public func keepAliveSucceeded(id: ConnectionID) {}
 
-    func keepAliveFailed(id: ConnectionID, error: Error) {}
+    public func keepAliveFailed(id: ConnectionID, error: Error) {}
 
-    func connectionClosing(id: ConnectionID) {}
+    public func connectionClosing(id: ConnectionID) {}
 
-    func connectionClosed(id: ConnectionID, error: Error?) {}
+    public func connectionClosed(id: ConnectionID, error: Error?) {}
 
-    func requestQueueDepthChanged(_ newDepth: Int) {}
+    public func requestQueueDepthChanged(_ newDepth: Int) {}
 }
