@@ -8,8 +8,9 @@ import Glibc
 struct PoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
-    /// If the pool is mostly idle and the Redis servers close these idle connections,
-    /// the `RedisConnectionPool` will initiate new outbound connections proactively to avoid the number of available connections dropping below this number.
+    /// If the pool is mostly idle and the remote servers closes idle connections,
+    /// the `ConnectionPool` will initiate new outbound connections proactively
+    /// to avoid the number of available connections dropping below this number.
     var minimumConnectionCount: Int = 0
 
     /// The maximum number of connections to for this pool, to be preserved.

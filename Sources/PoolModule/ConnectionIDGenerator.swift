@@ -13,4 +13,3 @@ public struct ConnectionIDGenerator: ConnectionIDGeneratorProtocol {
         return self.atomic.loadThenWrappingIncrement(ordering: .relaxed)
     }
 }
-

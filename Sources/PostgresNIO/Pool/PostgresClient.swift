@@ -9,8 +9,9 @@ public final class PostgresClient: Sendable {
         public struct Pool: Sendable {
             /// The minimum number of connections to preserve in the pool.
             ///
-            /// If the pool is mostly idle and the Redis servers close these idle connections,
-            /// the `RedisConnectionPool` will initiate new outbound connections proactively to avoid the number of available connections dropping below this number.
+            /// If the pool is mostly idle and the Postgres servers closes idle connections,
+            /// the `PostgresClient` will initiate new outbound connections proactively to avoid
+            /// the number of available connections dropping below this number.
             public var minimumConnectionCount: Int = 0
 
             /// The maximum number of connections to for this pool, to be preserved.
@@ -183,6 +184,9 @@ public final class PostgresClient: Sendable {
 }
 
 struct PostgresConnectionFactory: ConnectionFactory {
+    typealias ConnectionID = Int
+    typealias Connection = PostgresConnection
+
     let configuration: PostgresConnection.Configuration
     let logger: Logger
 
@@ -191,10 +195,7 @@ struct PostgresConnectionFactory: ConnectionFactory {
         self.logger = logger
     }
 
-    func makeConnection(
-        on eventLoop: EventLoop,
-        id: PostgresConnection.ID
-    ) -> EventLoopFuture<PostgresConnection> {
+    func makeConnection(on eventLoop: NIOCore.EventLoop, id: Int, for pool: PoolModule.ConnectionPool<PostgresConnectionFactory, PostgresConnection, Int, some PoolModule.ConnectionIDGeneratorProtocol, some PoolModule.ConnectionRequestProtocol, some Hashable, some PoolModule.ConnectionKeepAliveBehavior, some PoolModule.ConnectionPoolMetricsDelegate>) -> NIOCore.EventLoopFuture<PostgresConnection> {
         var connectionLogger = self.logger
         connectionLogger[postgresMetadataKey: .connectionID] = "\(id)"
 

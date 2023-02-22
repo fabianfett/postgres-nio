@@ -15,15 +15,24 @@ public protocol ConnectionFactory {
 
     func makeConnection(
         on eventLoop: EventLoop,
-        id: ConnectionID
+        id: ConnectionID,
+        for pool: ConnectionPool<Self, Connection, ConnectionID, some ConnectionIDGeneratorProtocol, some ConnectionRequestProtocol, some Hashable, some ConnectionKeepAliveBehavior, some ConnectionPoolMetricsDelegate>
     ) -> EventLoopFuture<Connection>
+}
+
+struct ConnectionAndMetadata<Connection: PooledConnection> {
+
+    var connection: Connection
+
+    var maximalStreamsOnConnection: Int
 }
 
 public struct ConnectionPoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
-    /// If the pool is mostly idle and the Redis servers close these idle connections,
-    /// the `RedisConnectionPool` will initiate new outbound connections proactively to avoid the number of available connections dropping below this number.
+    /// If the pool is mostly idle and the remote servers closes idle connections,
+    /// the `ConnectionPool` will initiate new outbound connections proactively
+    /// to avoid the number of available connections dropping below this number.
     public var minimumConnectionCount: Int
 
     /// The maximum number of connections to for this pool, to be preserved.
@@ -162,6 +171,25 @@ public final class ConnectionPool<
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.cancelRequest(id: requestID)
         }
+    }
+
+    /// Mark a connection as going away. Connection implementors have to call this method if there connection
+    /// has received a close intent from the server. For example: an HTTP/2 GOWAY frame.
+    public func connectionWillClose(_ connection: Connection) {
+
+    }
+
+    public func connectionDidClose(_ connection: Connection) {
+        // TODO: Can we get access to a potential connection error here?
+        self.metricsDelegate.connectionClosed(id: connection.id, error: nil)
+
+        self.modifyStateAndRunActions { stateMachine in
+            stateMachine.connectionClosed(connection)
+        }
+    }
+
+    public func connection(_ connection: Connection, didReceiveNewMaxStreamSetting: Int) {
+
     }
 
     public func shutdown() async throws {
@@ -417,13 +445,14 @@ public final class ConnectionPool<
 
         self.factory.makeConnection(
             on: request.eventLoop,
-            id: request.connectionID
+            id: request.connectionID,
+            for: self
         ).whenComplete { result in
             switch result {
             case .success(let connection):
                 self.connectionEstablished(connection)
                 connection.onClose {
-                    self.connectionClosed(connection)
+                    self.connectionDidClose(connection)
                 }
             case .failure(let error):
                 self.connectionEstablishFailed(error, for: request)
@@ -575,15 +604,6 @@ public final class ConnectionPool<
         self.metricsDelegate.connectionClosing(id: connection.id)
 
         connection.close()
-    }
-
-    private func connectionClosed(_ connection: Connection) {
-        // TODO: Can we get access to a potential connection error here?
-        self.metricsDelegate.connectionClosed(id: connection.id, error: nil)
-
-        self.modifyStateAndRunActions { stateMachine in
-            stateMachine.connectionClosed(connection)
-        }
     }
 }
 
