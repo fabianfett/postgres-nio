@@ -195,7 +195,7 @@ struct PostgresConnectionFactory: ConnectionFactory {
         self.logger = logger
     }
 
-    func makeConnection(on eventLoop: NIOCore.EventLoop, id: Int, for pool: PoolModule.ConnectionPool<PostgresConnectionFactory, PostgresConnection, Int, some PoolModule.ConnectionIDGeneratorProtocol, some PoolModule.ConnectionRequestProtocol, some Hashable, some PoolModule.ConnectionKeepAliveBehavior, some PoolModule.ConnectionPoolMetricsDelegate>) -> NIOCore.EventLoopFuture<PostgresConnection> {
+    func makeConnection(on eventLoop: NIOCore.EventLoop, id: Int, for pool: PoolModule.ConnectionPool<PostgresConnectionFactory, PostgresConnection, Int, some PoolModule.ConnectionIDGeneratorProtocol, some PoolModule.ConnectionRequestProtocol, some Hashable, some PoolModule.ConnectionKeepAliveBehavior, some PoolModule.ConnectionPoolMetricsDelegate>) -> NIOCore.EventLoopFuture<ConnectionAndMetadata<PostgresConnection>> {
         var connectionLogger = self.logger
         connectionLogger[postgresMetadataKey: .connectionID] = "\(id)"
 
@@ -204,7 +204,7 @@ struct PostgresConnectionFactory: ConnectionFactory {
             configuration: self.configuration,
             id: id,
             logger: connectionLogger
-        )
+        ).map { .init(connection: $0, maximalStreamsOnConnection: 1) }
     }
 }
 

@@ -368,7 +368,7 @@ struct PoolStateMachine<
         return .init(request: requestAction, connection: .none)
     }
 
-    mutating func releaseConnection(_ connection: Connection, streams: Int) -> Action {
+    mutating func releaseConnection(_ connection: Connection, streams: UInt16) -> Action {
         let eventLoopID = EventLoopID(connection.eventLoop)
         let (index, context) = self.connections[eventLoopID]!.releaseConnection(connection.id, streams: streams)
         return self.handleAvailableConnection(eventLoopID, index: index, availableContext: context)
@@ -396,9 +396,9 @@ struct PoolStateMachine<
         )
     }
 
-    mutating func connectionEstablished(_ connection: Connection) -> Action {
+    mutating func connectionEstablished(_ connection: Connection, maxStreams: UInt16) -> Action {
         let eventLoopID = EventLoopID(connection.eventLoop)
-        let (index, context) = self.connections[eventLoopID]!.newConnectionEstablished(connection)
+        let (index, context) = self.connections[eventLoopID]!.newConnectionEstablished(connection, maxStreams: maxStreams)
         return self.handleAvailableConnection(eventLoopID, index: index, availableContext: context)
     }
 

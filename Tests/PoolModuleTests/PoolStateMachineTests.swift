@@ -98,7 +98,7 @@ extension TestPoolStateMachine {
 
         let connections = initialConnectionRequests.compactMap { request -> TestConnection? in
             let newConnection = TestConnection(request: request)
-            let connectionEstablishedAction = stateMachine.connectionEstablished(newConnection)
+            let connectionEstablishedAction = stateMachine.connectionEstablished(newConnection, maxStreams: 1)
             XCTAssertEqual(connectionEstablishedAction.request, .none, file: file, line: line)
             guard case .scheduleKeepAliveTimer(newConnection.id, on: _) = connectionEstablishedAction.connection else {
                 XCTFail("Expected schedule ping timer connection action")

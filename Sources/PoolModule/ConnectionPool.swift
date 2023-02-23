@@ -17,14 +17,19 @@ public protocol ConnectionFactory {
         on eventLoop: EventLoop,
         id: ConnectionID,
         for pool: ConnectionPool<Self, Connection, ConnectionID, some ConnectionIDGeneratorProtocol, some ConnectionRequestProtocol, some Hashable, some ConnectionKeepAliveBehavior, some ConnectionPoolMetricsDelegate>
-    ) -> EventLoopFuture<Connection>
+    ) -> EventLoopFuture<ConnectionAndMetadata<Connection>>
 }
 
-struct ConnectionAndMetadata<Connection: PooledConnection> {
+public struct ConnectionAndMetadata<Connection: PooledConnection> {
 
-    var connection: Connection
+    public var connection: Connection
 
-    var maximalStreamsOnConnection: Int
+    public var maximalStreamsOnConnection: UInt16
+
+    public init(connection: Connection, maximalStreamsOnConnection: UInt16) {
+        self.connection = connection
+        self.maximalStreamsOnConnection = maximalStreamsOnConnection
+    }
 }
 
 public struct ConnectionPoolConfiguration {
@@ -153,7 +158,7 @@ public final class ConnectionPool<
         }
     }
 
-    public func releaseConnection(_ connection: Connection, streams: Int = 1) {
+    public func releaseConnection(_ connection: Connection, streams: UInt16 = 1) {
         self.metricsDelegate.connectionReleased(id: connection.id)
 
         self.modifyStateAndRunActions { stateMachine in
@@ -449,10 +454,10 @@ public final class ConnectionPool<
             for: self
         ).whenComplete { result in
             switch result {
-            case .success(let connection):
-                self.connectionEstablished(connection)
-                connection.onClose {
-                    self.connectionDidClose(connection)
+            case .success(let connectionBundle):
+                self.connectionEstablished(connectionBundle)
+                connectionBundle.connection.onClose {
+                    self.connectionDidClose(connectionBundle.connection)
                 }
             case .failure(let error):
                 self.connectionEstablishFailed(error, for: request)
@@ -460,12 +465,15 @@ public final class ConnectionPool<
         }
     }
 
-    private func connectionEstablished(_ connection: Connection) {
-        self.metricsDelegate.connectSucceeded(id: connection.id)
+    private func connectionEstablished(_ connectionBundle: ConnectionAndMetadata<Connection>) {
+        self.metricsDelegate.connectSucceeded(id: connectionBundle.connection.id)
 
         self.modifyStateAndRunActions { stateMachine in
             self._lastConnectError = nil
-            return stateMachine.connectionEstablished(connection)
+            return stateMachine.connectionEstablished(
+                connectionBundle.connection,
+                maxStreams: connectionBundle.maximalStreamsOnConnection
+            )
         }
     }
 

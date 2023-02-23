@@ -82,10 +82,13 @@ final class MockConnectionFactory: ConnectionFactory {
     typealias Connection = MockConnection
 
     let lock = NIOConcurrencyHelpers.NIOLock()
-    var _attempts = Deque<(Int, EventLoop, EventLoopPromise<MockConnection>)>()
+    var _attempts = Deque<(Int, EventLoop, EventLoopPromise<ConnectionAndMetadata<MockConnection>>)>()
 
-    func makeConnection(on eventLoop: EventLoop, id: Int) -> EventLoopFuture<MockConnection> {
-        let promise = eventLoop.makePromise(of: MockConnection.self)
+    func makeConnection(
+        on eventLoop: NIOCore.EventLoop,
+        id: Int,
+        for pool: PoolModule.ConnectionPool<MockConnectionFactory, MockConnection, Int, some PoolModule.ConnectionIDGeneratorProtocol, some PoolModule.ConnectionRequestProtocol, some Hashable, some PoolModule.ConnectionKeepAliveBehavior, some PoolModule.ConnectionPoolMetricsDelegate>) -> NIOCore.EventLoopFuture<PoolModule.ConnectionAndMetadata<MockConnection>> {
+        let promise = eventLoop.makePromise(of: ConnectionAndMetadata<MockConnection>.self)
         self.lock.withLock {
             self._attempts.append((id, eventLoop, promise))
         }
@@ -99,7 +102,7 @@ final class MockConnectionFactory: ConnectionFactory {
         }
 
         let connection = MockConnection(id: id, eventLoop: eventLoop)
-        defer { promise.succeed(connection) }
+        defer { promise.succeed(.init(connection: connection, maximalStreamsOnConnection: 1)) }
         return connection
     }
 

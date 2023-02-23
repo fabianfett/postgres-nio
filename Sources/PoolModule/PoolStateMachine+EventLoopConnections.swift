@@ -9,7 +9,7 @@ extension PoolStateMachine {
                 case notRunning
                 case running(Bool)
 
-                var usedStreams: Int {
+                var usedStreams: UInt16 {
                     switch self {
                     case .notRunning, .running(false):
                         return 0
@@ -27,9 +27,9 @@ extension PoolStateMachine {
             case backingOff
             /// The connection is `idle` and ready to execute a new query. Valid transitions to: `.pingpong`, `.leased`,
             /// `.closing` and `.closed`
-            case idle(Connection, maxStreams: Int, keepAlive: KeepAlive)
+            case idle(Connection, maxStreams: UInt16, keepAlive: KeepAlive)
             /// The connection is leased and executing a query. Valid transitions to: `.idle` and `.closed`
-            case leased(Connection, usedStreams: Int, maxStreams: Int, keepAlive: KeepAlive)
+            case leased(Connection, usedStreams: UInt16, maxStreams: UInt16, keepAlive: KeepAlive)
             /// The connection is closing. Valid transitions to: `.closed`
             case closing(Connection)
             /// The connection is closed. Final state.
@@ -96,7 +96,7 @@ extension PoolStateMachine {
             }
         }
 
-        mutating func connected(_ connection: Connection, maxStreams: Int) -> ConnectionAvailableInfo {
+        mutating func connected(_ connection: Connection, maxStreams: UInt16) -> ConnectionAvailableInfo {
             switch self.state {
             case .starting:
                 self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning)
@@ -125,24 +125,24 @@ extension PoolStateMachine {
             }
         }
 
-        mutating func lease(streams newLeasedStreams: Int = 1) -> Connection {
+        mutating func lease(streams newLeasedStreams: UInt16 = 1) -> (Connection, wasIdle: Bool) {
             switch self.state {
             case .idle(let connection, let maxStreams, let keepAlive):
                 precondition(maxStreams >= newLeasedStreams + keepAlive.usedStreams, "Invalid state: \(self.state)")
                 self.state = .leased(connection, usedStreams: newLeasedStreams, maxStreams: maxStreams, keepAlive: keepAlive)
-                return connection
+                return (connection, wasIdle: true)
 
             case .leased(let connection, let usedStreams, let maxStreams, let keepAlive):
                 precondition(maxStreams >= usedStreams + newLeasedStreams + keepAlive.usedStreams, "Invalid state: \(self.state)")
                 self.state = .leased(connection, usedStreams: usedStreams + newLeasedStreams, maxStreams: maxStreams, keepAlive: keepAlive)
-                return connection
+                return (connection, wasIdle: false)
 
             case .backingOff, .starting, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
 
-        mutating func release(streams returnedStreams: Int) -> ConnectionAvailableInfo {
+        mutating func release(streams returnedStreams: UInt16) -> ConnectionAvailableInfo {
             switch self.state {
             case .leased(let connection, let usedStreams, let maxStreams, let keepAlive):
                 precondition(usedStreams >= returnedStreams)
@@ -197,11 +197,16 @@ extension PoolStateMachine {
             }
         }
 
-        mutating func closeIfIdle() -> (Connection, Bool)? {
+        struct IdleState {
+            var runningKeepAlive: Bool
+            var maxStreams: UInt16
+        }
+
+        mutating func closeIfIdle() -> (Connection, IdleState)? {
             switch self.state {
-            case .idle(let connection, maxStreams: _, let keepAlive):
+            case .idle(let connection, let maxStreams, let keepAlive):
                 self.state = .closing(connection)
-                return (connection, keepAlive == .notRunning)
+                return (connection, .init(runningKeepAlive: keepAlive != .notRunning, maxStreams: maxStreams))
             case .leased, .closed:
                 return nil
             case .backingOff, .starting, .closing:
@@ -233,20 +238,25 @@ extension PoolStateMachine {
         }
 
         enum StateBeforeClose {
-            case idle
-            case leased
-            case runKeepAlive
+            case idle(maxStreams: UInt16, runningKeepAlive: Bool)
+            case leased(leasedStreams: UInt16, maxStreams: UInt16, runningKeepAlive: Bool)
             case closing
         }
 
         mutating func closed() -> StateBeforeClose {
             switch self.state {
-            case .idle:
+            case .idle(_, let maxStreams, .running):
                 self.state = .closed
-                return .idle
-            case .leased:
+                return .idle(maxStreams: maxStreams, runningKeepAlive: true)
+            case .idle(_, let maxStreams, .notRunning):
                 self.state = .closed
-                return .leased
+                return .idle(maxStreams: maxStreams, runningKeepAlive: false)
+            case .leased(_, let leasedStreams, let maxStreams, .running):
+                self.state = .closed
+                return .leased(leasedStreams: leasedStreams, maxStreams: maxStreams, runningKeepAlive: true)
+            case .leased(_, let leasedStreams, let maxStreams, .notRunning):
+                self.state = .closed
+                return .leased(leasedStreams: leasedStreams, maxStreams: maxStreams, runningKeepAlive: false)
             case .closing:
                 self.state = .closed
                 return .closing
@@ -257,8 +267,8 @@ extension PoolStateMachine {
     }
 
     enum ConnectionAvailableInfo: Equatable {
-        case leased(availableStreams: Int)
-        case idle(availableStreams: Int, newIdle: Bool)
+        case leased(availableStreams: UInt16)
+        case idle(availableStreams: UInt16, newIdle: Bool)
     }
 
     struct EventLoopConnections {
@@ -270,12 +280,15 @@ extension PoolStateMachine {
             var runningKeepAlive: UInt16 = 0
             var closing: UInt16 = 0
 
+            var availableStreams: UInt16 = 0
+            var leasedStreams: UInt16 = 0
+
             var soonAvailable: UInt16 {
                 self.connecting + self.backingOff + self.runningKeepAlive
             }
 
             var active: UInt16 {
-                self.idle + self.leased + self.runningKeepAlive + self.connecting + self.backingOff
+                self.idle + self.leased + self.connecting + self.backingOff
             }
         }
 
@@ -402,13 +415,14 @@ extension PoolStateMachine {
         /// - Returns: An index and an IdleConnectionContext to determine the next action for the now idle connection.
         ///            Call ``parkConnection(at:)``, ``leaseConnection(at:)`` or ``closeConnection(at:)``
         ///            with the supplied index after this.
-        mutating func newConnectionEstablished(_ connection: Connection) -> (Int, AvailableConnectionContext) {
+        mutating func newConnectionEstablished(_ connection: Connection, maxStreams: UInt16) -> (Int, AvailableConnectionContext) {
             guard let index = self.connections.firstIndex(where: { $0.id == connection.id }) else {
                 preconditionFailure("There is a new connection that we didn't request!")
             }
             self.stats.connecting -= 1
             self.stats.idle += 1
-            let connectionInfo = self.connections[index].connected(connection, maxStreams: 1)
+            self.stats.availableStreams += maxStreams
+            let connectionInfo = self.connections[index].connected(connection, maxStreams: maxStreams)
             // TODO: If this is an overflow connection, but we are currently also creating a
             //       persisted connection, we might want to swap those.
             let context = self.makeAvailableConnectionContextForConnection(at: index, info: connectionInfo)
@@ -529,19 +543,17 @@ extension PoolStateMachine {
         ///
         /// - Returns: A connection to execute a request on.
         mutating func leaseConnection() -> (Connection, ConnectionUse)? {
-            if self.stats.idle == 0 {
+            if self.stats.availableStreams == 0 {
                 return nil
             }
 
-            guard let index = self.findIdleConnection() else {
+            guard let index = self.findAvailableConnection() else {
                 preconditionFailure("Stats and actual count are of.")
             }
 
             let use = self.getConnectionUse(index: index)
-
-            self.stats.idle -= 1
-            self.stats.leased += 1
-            return (self.connections[index].lease(), use)
+            let connection = self.leaseConnection(at: index)
+            return (connection, use)
         }
 
         enum LeasedConnectionOrStartingCount {
@@ -557,9 +569,15 @@ extension PoolStateMachine {
         }
 
         mutating func leaseConnection(at index: Int) -> Connection {
-            self.stats.idle -= 1
-            self.stats.leased += 1
-            return self.connections[index].lease()
+            let (connection, wasIdle) = self.connections[index].lease()
+
+            if wasIdle {
+                self.stats.idle -= 1
+                self.stats.leased += 1
+            }
+            self.stats.leasedStreams += 1
+            self.stats.availableStreams -= 1
+            return connection
         }
 
         func parkConnection(at index: Int) -> Connection.ID {
@@ -575,15 +593,22 @@ extension PoolStateMachine {
         /// - Returns: An index and an IdleConnectionContext to determine the next action for the now idle connection.
         ///            Call ``leaseConnection(at:)`` or ``closeConnection(at:)`` with the supplied index after
         ///            this. If you want to park the connection no further call is required.
-        mutating func releaseConnection(_ connectionID: Connection.ID, streams: Int) -> (Int, AvailableConnectionContext) {
+        mutating func releaseConnection(_ connectionID: Connection.ID, streams: UInt16) -> (Int, AvailableConnectionContext) {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
                 preconditionFailure("A connection that we don't know was released? Something is very wrong...")
             }
 
-            self.stats.idle += 1
-            self.stats.leased -= 1
-
             let connectionInfo = self.connections[index].release(streams: streams)
+            self.stats.availableStreams += streams
+            self.stats.leasedStreams -= streams
+            switch connectionInfo {
+            case .idle:
+                self.stats.idle += 1
+                self.stats.leased -= 1
+            case .leased:
+                break
+            }
+
             let context = self.makeAvailableConnectionContextForConnection(at: index, info: connectionInfo)
             return (index, context)
         }
@@ -599,8 +624,10 @@ extension PoolStateMachine {
                 return nil
             }
 
-            self.stats.idle -= 1
             self.stats.runningKeepAlive += 1
+            if self.keepAliveReducesAvailableStreams {
+                self.stats.availableStreams -= 1
+            }
 
             return connection
         }
@@ -610,12 +637,18 @@ extension PoolStateMachine {
                 preconditionFailure("A connection that we don't know was released? Something is very wrong...")
             }
 
-            self.stats.idle += 1
-            self.stats.runningKeepAlive -= 1
-
             guard let connectionInfo = self.connections[index].keepAliveSucceeded() else {
+                // if we don't get connection info here this means, that the connection already was
+                // transitioned to closing. when we did this we already decremented the
+                // runningKeepAlive timer.
                 return nil
             }
+
+            self.stats.runningKeepAlive -= 1
+            if self.keepAliveReducesAvailableStreams {
+                self.stats.availableStreams += 1
+            }
+
             let context = self.makeAvailableConnectionContextForConnection(at: index, info: connectionInfo)
             return (index, context)
         }
@@ -643,18 +676,23 @@ extension PoolStateMachine {
                 return nil
             }
 
-            guard let (connection, cancelKeepAliveTimer) = self.connections[index].closeIfIdle() else {
+            guard let (connection, idleState) = self.connections[index].closeIfIdle() else {
                 return nil
             }
 
-            if cancelKeepAliveTimer {
-                self.stats.idle -= 1
-            } else {
-                self.stats.runningKeepAlive -= 1
-            }
+            self.stats.idle -= 1
             self.stats.closing += 1
 
-            return (connection, cancelKeepAliveTimer)
+            if idleState.runningKeepAlive {
+                self.stats.runningKeepAlive -= 1
+                if self.keepAliveReducesAvailableStreams {
+                    self.stats.availableStreams += 1
+                }
+            }
+
+            self.stats.availableStreams -= idleState.maxStreams
+
+            return (connection, !idleState.runningKeepAlive)
         }
 
         // MARK: Connection failure
@@ -674,14 +712,21 @@ extension PoolStateMachine {
             }
 
             switch self.connections[index].closed() {
-            case .idle:
+            case .idle(let maxStreams, let runningKeepAlive):
                 self.stats.idle -= 1
+                self.stats.availableStreams -= maxStreams
+                if runningKeepAlive {
+                    self.stats.runningKeepAlive -= 1
+                }
             case .closing:
                 self.stats.closing -= 1
-            case .runKeepAlive:
-                self.stats.runningKeepAlive -= 1
-            case .leased:
+            case .leased(let usedStreams, let maxStreams, let runningKeepAlive):
                 self.stats.leased -= 1
+                self.stats.availableStreams -= maxStreams - usedStreams
+                self.stats.leasedStreams -= usedStreams
+                if runningKeepAlive {
+                    self.stats.runningKeepAlive -= 1
+                }
             }
             let lastIndex = self.connections.endIndex - 1
 
@@ -739,7 +784,7 @@ extension PoolStateMachine {
             return AvailableConnectionContext(eventLoop: self.eventLoop, use: use, info: info)
         }
 
-        private func findIdleConnection() -> Int? {
+        private func findAvailableConnection() -> Int? {
             return self.connections.firstIndex(where: { $0.isAvailable })
         }
     }
