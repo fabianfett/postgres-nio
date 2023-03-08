@@ -3,17 +3,21 @@ import NIOCore
 
 extension PoolStateMachine {
 
+    @usableFromInline
     struct RequestQueue {
-        private struct EventLoopQueue {
-            private let maxConsecutivePicks: UInt8
-            private var consecutivePicks: UInt8 = 0
-            private var queue: Deque<RequestID>
+        @usableFromInline
+        struct EventLoopQueue {
+            @usableFromInline let maxConsecutivePicks: UInt8
+            @usableFromInline private(set) var consecutivePicks: UInt8 = 0
+            @usableFromInline private(set) var queue: Deque<RequestID>
 
+            @inlinable
             init(maxConsecutivePicks: UInt8) {
                 self.maxConsecutivePicks = maxConsecutivePicks
                 self.queue = .init(minimumCapacity: 128)
             }
 
+            @inlinable
             mutating func pop(lookup: inout [RequestID: Request]) -> Request? {
                 guard self.consecutivePicks < self.maxConsecutivePicks else {
                     self.consecutivePicks = 0
@@ -32,32 +36,39 @@ extension PoolStateMachine {
                 return nil
             }
 
+            @inlinable
             mutating func pop(id: RequestID) {
                 precondition(self.queue.popFirst() == id)
             }
 
+            @inlinable
             mutating func append(_ requestID: RequestID) {
                 self.queue.append(requestID)
             }
         }
 
-        ///
-        private var generalPurposeQueue: Deque<RequestID>
+        @usableFromInline
+        private(set) var generalPurposeQueue: Deque<RequestID>
 
         ///
-        private var eventLoopQueues: [EventLoopID: EventLoopQueue]
+        @usableFromInline
+        private(set) var eventLoopQueues: [EventLoopID: EventLoopQueue]
 
         ///
-        private var requests: [RequestID: Request]
+        @usableFromInline
+        private(set) var requests: [RequestID: Request]
 
+        @inlinable
         var count: Int {
             self.requests.count
         }
 
+        @inlinable
         var isEmpty: Bool {
             self.count == 0
         }
 
+        @usableFromInline
         init(eventLoopGroup: EventLoopGroup, maxConsecutivePicksFromEventLoopQueue: UInt8) {
             self.generalPurposeQueue = .init(minimumCapacity: 128)
             self.eventLoopQueues = [:]
@@ -70,6 +81,7 @@ extension PoolStateMachine {
             self.requests = .init(minimumCapacity: 256)
         }
 
+        @inlinable
         mutating func queue(_ request: Request) {
             self.requests[request.id] = request
             self.generalPurposeQueue.append(request.id)
@@ -78,6 +90,7 @@ extension PoolStateMachine {
             }
         }
 
+        @inlinable
         mutating func pop(for eventLoopID: EventLoopID) -> Request? {
             if let request = self.eventLoopQueues[eventLoopID]!.pop(lookup: &self.requests) {
                 return request
@@ -99,12 +112,14 @@ extension PoolStateMachine {
             return nil
         }
 
+        @inlinable
         mutating func remove(_ requestID: RequestID) -> Request? {
             self.requests.removeValue(forKey: requestID)
         }
 
-        mutating func removeAll() -> [Request] {
-            let result = Array(self.requests.values)
+        @inlinable
+        mutating func removeAll() -> RequestCollection<Request> {
+            let result = RequestCollection(self.requests.values)
             self.requests.removeAll()
             self.generalPurposeQueue.removeAll()
             self.eventLoopQueues.removeAll()

@@ -10,13 +10,17 @@ public protocol ConnectionKeepAliveBehavior: Sendable {
 }
 
 public protocol ConnectionFactory {
-    associatedtype ConnectionID: Hashable
-    associatedtype Connection
+    associatedtype Connection: PooledConnection
+    associatedtype ConnectionID: Hashable where Connection.ID == ConnectionID
+    associatedtype ConnectionIDGenerator: ConnectionIDGeneratorProtocol where ConnectionIDGenerator.ID == ConnectionID
+    associatedtype Request: ConnectionRequestProtocol where Request.Connection == Connection
+    associatedtype KeepAliveBehavior: ConnectionKeepAliveBehavior where KeepAliveBehavior.Connection == Connection
+    associatedtype MetricsDelegate: ConnectionPoolMetricsDelegate where MetricsDelegate.ConnectionID == ConnectionID
 
     func makeConnection(
         on eventLoop: EventLoop,
         id: ConnectionID,
-        for pool: ConnectionPool<Self, Connection, ConnectionID, some ConnectionIDGeneratorProtocol, some ConnectionRequestProtocol, some Hashable, some ConnectionKeepAliveBehavior, some ConnectionPoolMetricsDelegate>
+        for pool: ConnectionPool<Self, Connection, ConnectionID, ConnectionIDGenerator, Request, Request.ID, KeepAliveBehavior, MetricsDelegate>
     ) -> EventLoopFuture<ConnectionAndMetadata<Connection>>
 }
 
@@ -81,7 +85,7 @@ public protocol ConnectionRequestProtocol {
 
     var preferredEventLoop: EventLoop? { get }
 
-    var deadline: NIODeadline { get }
+    var deadline: NIODeadline? { get }
 
     func complete(with: Result<Connection, PoolError>)
 }
@@ -98,6 +102,10 @@ public final class ConnectionPool<
 >: @unchecked Sendable where
     Factory.Connection == Connection,
     Factory.ConnectionID == ConnectionID,
+    Factory.ConnectionIDGenerator == ConnectionIDGenerator,
+    Factory.Request == Request,
+    Factory.KeepAliveBehavior == KeepAliveBehavior,
+    Factory.MetricsDelegate == MetricsDelegate,
     Connection.ID == ConnectionID,
     ConnectionIDGenerator.ID == ConnectionID,
     Request.Connection == Connection,
@@ -105,29 +113,33 @@ public final class ConnectionPool<
     KeepAliveBehavior.Connection == Connection,
     MetricsDelegate.ConnectionID == ConnectionID
 {
+    @usableFromInline
     typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID>
 
     public let eventLoopGroup: EventLoopGroup
 
+    @usableFromInline
     let factory: Factory
 
+    @usableFromInline
     let keepAliveBehavior: KeepAliveBehavior
 
-    let metricsDelegate: MetricsDelegate
+    @usableFromInline let metricsDelegate: MetricsDelegate
 
+    @usableFromInline
     let configuration: ConnectionPoolConfiguration
 
-    private let stateLock = NIOLock()
-    private var _stateMachine: StateMachine
-    private var _lastConnectError: Error?
+    @usableFromInline let stateLock = NIOLock()
+    @usableFromInline private(set) var _stateMachine: StateMachine
+    @usableFromInline private(set) var _lastConnectError: Error?
     /// The request connection timeout timers. Protected by the stateLock
-    private var _requestTimer = [Request.ID: Scheduled<Void>]()
+    @usableFromInline private(set) var _requestTimer = [Request.ID: Scheduled<Void>]()
     /// The connection keep-alive timers. Protected by the stateLock
-    private var _keepAliveTimer = [ConnectionID: Scheduled<Void>]()
+    @usableFromInline private(set) var _keepAliveTimer = [ConnectionID: Scheduled<Void>]()
     /// The connection idle timers. Protected by the stateLock
-    private var _idleTimer = [ConnectionID: Scheduled<Void>]()
+    @usableFromInline private(set) var _idleTimer = [ConnectionID: Scheduled<Void>]()
     /// The connection backoff timers. Protected by the stateLock
-    private var _backoffTimer = [ConnectionID: Scheduled<Void>]()
+    @usableFromInline private(set) var _backoffTimer = [ConnectionID: Scheduled<Void>]()
 
     private let requestIDGenerator = PoolModule.ConnectionIDGenerator()
 
@@ -158,6 +170,7 @@ public final class ConnectionPool<
         }
     }
 
+    @inlinable
     public func releaseConnection(_ connection: Connection, streams: UInt16 = 1) {
         self.metricsDelegate.connectionReleased(id: connection.id)
 
@@ -166,9 +179,32 @@ public final class ConnectionPool<
         }
     }
 
+    @inlinable
     public func leaseConnection(_ request: Request) {
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.leaseConnection(request)
+        }
+    }
+
+    @inlinable
+    public func leaseConnections(for requests: some Collection<Request>) {
+        let unlocked = self.stateLock.withLock { () -> [Actions.Unlocked] in
+            var unlocked = [Actions.Unlocked]()
+            unlocked.reserveCapacity(requests.count)
+
+            for request in requests {
+                let stateMachineAction = self._stateMachine.leaseConnection(request)
+                let poolAction = Actions(from: stateMachineAction, lastConnectError: self._lastConnectError)
+                self.runLockedConnectionAction(poolAction.locked.connection)
+                self.runLockedRequestAction(poolAction.locked.request)
+                unlocked.append(poolAction.unlocked)
+            }
+
+            return unlocked
+        }
+
+        for unlockedActions in unlocked {
+            self.runUnlockedActions(unlockedActions)
         }
     }
 
@@ -193,7 +229,7 @@ public final class ConnectionPool<
         }
     }
 
-    public func connection(_ connection: Connection, didReceiveNewMaxStreamSetting: Int) {
+    public func connection(_ connection: Connection, didReceiveNewMaxStreamSetting: UInt16) {
 
     }
 
@@ -217,8 +253,11 @@ public final class ConnectionPool<
     /// An `PostgresConnectionPool` internal action type that matches the `StateMachine`'s action.
     /// However it splits up the actions into actions that need to be executed inside the `stateLock`
     /// and outside the `stateLock`.
-    private struct Actions {
+    @usableFromInline
+    struct Actions {
+        @usableFromInline
         enum ConnectionAction {
+            @usableFromInline
             enum Unlocked {
                 case createConnection(StateMachine.ConnectionRequest)
                 case closeConnection(Connection)
@@ -228,6 +267,7 @@ public final class ConnectionPool<
                 case none
             }
 
+            @usableFromInline
             enum Locked {
                 case scheduleBackoffTimer(ConnectionID, backoff: TimeAmount, on: EventLoop)
                 case cancelBackoffTimers([ConnectionID])
@@ -243,52 +283,77 @@ public final class ConnectionPool<
             }
         }
 
+        @usableFromInline
         enum RequestAction {
+            @usableFromInline
             enum Unlocked {
-                case leaseConnection(Request, Connection)
+                case leaseConnection(RequestCollection<Request>, Connection)
                 case failRequest(Request, PoolError)
-                case failRequests([Request], PoolError)
+                case failRequests(RequestCollection<Request>, PoolError)
                 case none
             }
 
+            @usableFromInline
             enum Locked {
                 case scheduleRequestTimeout(for: Request, on: EventLoop)
                 case cancelRequestTimeout(Request.ID)
-                case cancelRequestTimeouts([Request])
+                case cancelRequestTimeouts(LazyFilterSequence<RequestCollection<Request>>)
                 case none
             }
         }
 
+        @usableFromInline
         struct Locked {
+            @usableFromInline
             var connection: ConnectionAction.Locked
+            @usableFromInline
             var request: RequestAction.Locked
+
+            @inlinable
+            init(connection: ConnectionAction.Locked, request: RequestAction.Locked) {
+                self.connection = connection
+                self.request = request
+            }
         }
 
+        @usableFromInline
         struct Unlocked {
+            @usableFromInline
             var connection: ConnectionAction.Unlocked
+            @usableFromInline
             var request: RequestAction.Unlocked
+
+            @inlinable
+            init(connection: ConnectionAction.Unlocked, request: RequestAction.Unlocked) {
+                self.connection = connection
+                self.request = request
+            }
         }
 
+        @usableFromInline
         var locked: Locked
+        @usableFromInline
         var unlocked: Unlocked
 
+        @inlinable
         init(from stateMachineAction: StateMachine.Action, lastConnectError: Error?) {
             self.locked = Locked(connection: .none, request: .none)
             self.unlocked = Unlocked(connection: .none, request: .none)
 
             switch stateMachineAction.request {
-            case .leaseConnection(let request, let connection, cancelTimeout: let cancelTimeout):
+            case .leaseConnection(let requests, let connection, cancelTimeout: let cancelTimeout):
+
                 if cancelTimeout {
-                    self.locked.request = .cancelRequestTimeout(request.id)
+                    self.locked.request = .cancelRequestTimeouts(requests.lazy.filter { $0.deadline != nil })
                 }
-                self.unlocked.request = .leaseConnection(request, connection)
+                self.unlocked.request = .leaseConnection(requests, connection)
             case .failRequest(let request, let error, cancelTimeout: let cancelTimeout):
                 if cancelTimeout {
                     self.locked.request = .cancelRequestTimeout(request.id)
                 }
                 self.unlocked.request = .failRequest(request, error)
             case .failRequestsAndCancelTimeouts(let requests, let error):
-                self.locked.request = .cancelRequestTimeouts(requests)
+                self.locked.request = .cancelRequestTimeouts(requests.lazy.filter { $0.deadline != nil })
                 self.unlocked.request = .failRequests(requests, error)
             case .scheduleRequestTimeout(for: let request, on: let eventLoop):
                 self.locked.request = .scheduleRequestTimeout(for: request, on: eventLoop)
@@ -337,7 +402,8 @@ public final class ConnectionPool<
 
     // MARK: Run actions
 
-    private func modifyStateAndRunActions(_ closure: (inout StateMachine) -> StateMachine.Action) {
+    @inlinable
+    /*private*/ func modifyStateAndRunActions(_ closure: (inout StateMachine) -> StateMachine.Action) {
         let unlockedActions = self.stateLock.withLock { () -> Actions.Unlocked in
             let stateMachineAction = closure(&self._stateMachine)
             let poolAction = Actions(from: stateMachineAction, lastConnectError: self._lastConnectError)
@@ -348,7 +414,8 @@ public final class ConnectionPool<
         self.runUnlockedActions(unlockedActions)
     }
 
-    private func runLockedConnectionAction(_ action: Actions.ConnectionAction.Locked) {
+    @inlinable
+    /*private*/ func runLockedConnectionAction(_ action: Actions.ConnectionAction.Locked) {
         switch action {
         case .scheduleBackoffTimer(let connectionID, backoff: let backoff, on: let eventLoop):
             self.scheduleConnectionStartBackoffTimer(connectionID, backoff, on: eventLoop)
@@ -388,7 +455,8 @@ public final class ConnectionPool<
         }
     }
 
-    private func runLockedRequestAction(_ action: Actions.RequestAction.Locked) {
+    @inlinable
+    /*private*/ func runLockedRequestAction(_ action: Actions.RequestAction.Locked) {
         switch action {
         case .scheduleRequestTimeout(for: let request, on: let eventLoop):
             self.scheduleRequestTimeout(request, on: eventLoop)
@@ -404,12 +472,14 @@ public final class ConnectionPool<
         }
     }
 
-    private func runUnlockedActions(_ actions: Actions.Unlocked) {
+    @inlinable
+    /*private*/ func runUnlockedActions(_ actions: Actions.Unlocked) {
         self.runUnlockedConnectionAction(actions.connection)
         self.runUnlockedRequestAction(actions.request)
     }
 
-    private func runUnlockedConnectionAction(_ action: Actions.ConnectionAction.Unlocked) {
+    @inlinable
+    /*private*/ func runUnlockedConnectionAction(_ action: Actions.ConnectionAction.Unlocked) {
         switch action {
         case .createConnection(let connectionRequest):
             self.makeConnection(for: connectionRequest)
@@ -431,11 +501,14 @@ public final class ConnectionPool<
         }
     }
 
-    private func runUnlockedRequestAction(_ action: Actions.RequestAction.Unlocked) {
+    @inlinable
+    /*private*/ func runUnlockedRequestAction(_ action: Actions.RequestAction.Unlocked) {
         switch action {
-        case .leaseConnection(let request, let connection):
+        case .leaseConnection(let requests, let connection):
             self.metricsDelegate.connectionLeased(id: connection.id)
-            request.complete(with: .success(connection))
+            for request in requests {
+                request.complete(with: .success(connection))
+            }
         case .failRequest(let request, let error):
             request.complete(with: .failure(error))
         case .failRequests(let requests, let error):
@@ -445,7 +518,8 @@ public final class ConnectionPool<
         }
     }
 
-    private func makeConnection(for request: StateMachine.ConnectionRequest) {
+    @inlinable
+    /*private*/ func makeConnection(for request: StateMachine.ConnectionRequest) {
         self.metricsDelegate.startedConnecting(id: request.connectionID)
 
         self.factory.makeConnection(
@@ -465,7 +539,8 @@ public final class ConnectionPool<
         }
     }
 
-    private func connectionEstablished(_ connectionBundle: ConnectionAndMetadata<Connection>) {
+    @inlinable
+    /*private*/ func connectionEstablished(_ connectionBundle: ConnectionAndMetadata<Connection>) {
         self.metricsDelegate.connectSucceeded(id: connectionBundle.connection.id)
 
         self.modifyStateAndRunActions { stateMachine in
@@ -477,7 +552,8 @@ public final class ConnectionPool<
         }
     }
 
-    private func connectionEstablishFailed(_ error: Error, for request: StateMachine.ConnectionRequest) {
+    @inlinable
+    /*private*/ func connectionEstablishFailed(_ error: Error, for request: StateMachine.ConnectionRequest) {
         self.metricsDelegate.connectFailed(id: request.connectionID, error: error)
 
         self.modifyStateAndRunActions { stateMachine in
@@ -486,9 +562,10 @@ public final class ConnectionPool<
         }
     }
 
-    private func scheduleRequestTimeout(_ request: Request, on eventLoop: EventLoop) {
+    @inlinable
+    /*private*/ func scheduleRequestTimeout(_ request: Request, on eventLoop: EventLoop) {
         let requestID = request.id
-        let scheduled = eventLoop.scheduleTask(deadline: request.deadline) {
+        let scheduled = eventLoop.scheduleTask(deadline: request.deadline!) {
             // there might be a race between a the timeout timer and the pool scheduling the
             // request on another thread.
             self.modifyStateAndRunActions { stateMachine in
@@ -505,14 +582,16 @@ public final class ConnectionPool<
         self._requestTimer[requestID] = scheduled
     }
 
-    private func cancelRequestTimeout(_ id: Request.ID) {
+    @inlinable
+    /*private*/ func cancelRequestTimeout(_ id: Request.ID) {
         guard let cancelTimer = self._requestTimer.removeValue(forKey: id) else {
             preconditionFailure("Expected to have a timer for request \(id) at this point.")
         }
         cancelTimer.cancel()
     }
 
-    private func scheduleKeepAliveTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
+    @inlinable
+    /*private*/ func scheduleKeepAliveTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
         let scheduled = eventLoop.scheduleTask(in: self.keepAliveBehavior.keepAliveFrequency!) {
             // there might be a race between a cancelTimer call and the triggering
             // of this scheduled task. both want to acquire the lock
@@ -529,14 +608,16 @@ public final class ConnectionPool<
         self._keepAliveTimer[connectionID] = scheduled
     }
 
-    private func cancelKeepAliveTimerForConnection(_ connectionID: ConnectionID) {
+    @inlinable
+    /*private*/ func cancelKeepAliveTimerForConnection(_ connectionID: ConnectionID) {
         guard let cancelTimer = self._keepAliveTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have an idle timer for connection \(connectionID) at this point.")
         }
         cancelTimer.cancel()
     }
 
-    private func scheduleIdleTimeoutTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
+    @inlinable
+    /*private*/ func scheduleIdleTimeoutTimerForConnection(_ connectionID: ConnectionID, on eventLoop: EventLoop) {
         let scheduled = eventLoop.scheduleTask(in: self.configuration.idleTimeout) {
             // there might be a race between a cancelTimer call and the triggering
             // of this scheduled task. both want to acquire the lock
@@ -553,14 +634,16 @@ public final class ConnectionPool<
         self._idleTimer[connectionID] = scheduled
     }
 
-    private func cancelIdleTimeoutTimerForConnection(_ connectionID: ConnectionID) {
+    @inlinable
+    /*private*/ func cancelIdleTimeoutTimerForConnection(_ connectionID: ConnectionID) {
         guard let cancelTimer = self._idleTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have an idle timer for connection \(connectionID) at this point.")
         }
         cancelTimer.cancel()
     }
 
-    private func scheduleConnectionStartBackoffTimer(
+    @inlinable
+    /*private*/ func scheduleConnectionStartBackoffTimer(
         _ connectionID: ConnectionID,
         _ timeAmount: TimeAmount,
         on eventLoop: EventLoop
@@ -580,14 +663,16 @@ public final class ConnectionPool<
         self._backoffTimer[connectionID] = scheduled
     }
 
-    private func cancelConnectionStartBackoffTimer(_ connectionID: ConnectionID) {
+    @inlinable
+    /*private*/ func cancelConnectionStartBackoffTimer(_ connectionID: ConnectionID) {
         guard let backoffTimer = self._backoffTimer.removeValue(forKey: connectionID) else {
             preconditionFailure("Expected to have a backoff timer for connection \(connectionID) at this point.")
         }
         backoffTimer.cancel()
     }
 
-    private func runKeepAlive(_ connection: Connection) {
+    @inlinable
+    /*private*/ func runKeepAlive(_ connection: Connection) {
         self.metricsDelegate.keepAliveTriggered(id: connection.id)
 
         self.keepAliveBehavior.runKeepAlive(for: connection).whenComplete { result in
@@ -608,7 +693,8 @@ public final class ConnectionPool<
         }
     }
 
-    private func closeConnection(_ connection: Connection) {
+    @inlinable
+    /*private*/ func closeConnection(_ connection: Connection) {
         self.metricsDelegate.connectionClosing(id: connection.id)
 
         connection.close()

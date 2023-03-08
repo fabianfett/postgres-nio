@@ -5,24 +5,155 @@ import Darwin
 import Glibc
 #endif
 
+@usableFromInline
 struct PoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
     /// If the pool is mostly idle and the remote servers closes idle connections,
     /// the `ConnectionPool` will initiate new outbound connections proactively
     /// to avoid the number of available connections dropping below this number.
+    @usableFromInline
     var minimumConnectionCount: Int = 0
 
     /// The maximum number of connections to for this pool, to be preserved.
+    @usableFromInline
     var maximumConnectionSoftLimit: Int = 10
 
+    @usableFromInline
     var maximumConnectionHardLimit: Int = 10
 
+    @usableFromInline
     var maxConsecutivePicksFromEventLoopQueue: UInt8 = 16
 
+    @usableFromInline
     var keepAlive: Bool = false
 }
 
+@usableFromInline
+struct RequestCollection<Element: ConnectionRequestProtocol>: Sequence {
+    @usableFromInline
+    enum Base {
+        case none(reserveCapacity: Int)
+        case one(Element, reserveCapacity: Int)
+        case n([Element])
+    }
+
+    @usableFromInline
+    private(set) var base: Base
+
+    @inlinable
+    init() {
+        self.base = .none(reserveCapacity: 0)
+    }
+
+    @inlinable
+    init(_ element: Element) {
+        self.base = .one(element, reserveCapacity: 1)
+    }
+
+    @inlinable
+    init(_ collection: some Collection<Element>) {
+        switch collection.count {
+        case 0:
+            self.base = .none(reserveCapacity: 0)
+        case 1:
+            self.base = .one(collection.first!, reserveCapacity: 0)
+        default:
+            self.base = .n(Array(collection))
+        }
+    }
+
+    @usableFromInline
+    var count: Int {
+        switch self.base {
+        case .none:
+            return 0
+        case .one:
+            return 1
+        case .n(let array):
+            return array.count
+        }
+    }
+
+    @usableFromInline
+    var isEmpty: Bool {
+        switch self.base {
+        case .none:
+            return true
+        case .one, .n:
+            return false
+        }
+    }
+
+    @inlinable
+    mutating func reserveCapacity(_ minimumCapacity: Int) {
+        switch self.base {
+        case .none(let reservedCapacity):
+            self.base = .none(reserveCapacity: Swift.max(reservedCapacity, minimumCapacity))
+        case .one(let element, let reservedCapacity):
+            self.base = .one(element, reserveCapacity: Swift.max(reservedCapacity, minimumCapacity))
+        case .n(var array):
+            array.reserveCapacity(minimumCapacity)
+        }
+    }
+
+    @inlinable
+    mutating func append(_ element: Element) {
+        switch self.base {
+        case .none(let reserveCapacity):
+            self.base = .one(element, reserveCapacity: reserveCapacity)
+        case .one(let existing, let reserveCapacity):
+            var new = [Element]()
+            new.reserveCapacity(reserveCapacity)
+            new.append(existing)
+            new.append(element)
+            self.base = .n(new)
+        case .n(var existing):
+            self.base = .none(reserveCapacity: 0) // prevent CoW
+            existing.append(element)
+            self.base = .n(existing)
+        }
+    }
+
+    @inlinable
+    func makeIterator() -> Iterator {
+        Iterator(self)
+    }
+
+    @usableFromInline
+    struct Iterator: IteratorProtocol {
+        @usableFromInline private(set) var index: Int = 0
+        @usableFromInline private(set) var backing: RequestCollection<Element>
+
+        @inlinable
+        init(_ backing: RequestCollection<Element>) {
+            self.backing = backing
+        }
+
+        @inlinable
+        mutating func next() -> Element? {
+            switch self.backing.base {
+            case .none:
+                return nil
+            case .one(let element, _):
+                if self.index == 0 {
+                    self.index += 1
+                    return element
+                }
+                return nil
+
+            case .n(let array):
+                if self.index < array.endIndex {
+                    defer { self.index += 1}
+                    return array[self.index]
+                }
+                return nil
+            }
+        }
+    }
+}
+
+@usableFromInline
 struct PoolStateMachine<
     Connection: PooledConnection,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
@@ -31,32 +162,46 @@ struct PoolStateMachine<
     RequestID
 > where Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, RequestID == Request.ID {
 
+    @usableFromInline
     struct Action: Equatable {
-        let request: RequestAction
-        let connection: ConnectionAction
+        @usableFromInline let request: RequestAction
+        @usableFromInline let connection: ConnectionAction
 
+        @inlinable
         init(request: RequestAction, connection: ConnectionAction) {
             self.request = request
             self.connection = connection
         }
 
+        @inlinable
         static func none() -> Action { Action(request: .none, connection: .none) }
     }
 
+    @usableFromInline
     enum ConnectionAction: Equatable {
+        @usableFromInline
         struct Shutdown: Equatable {
+            @usableFromInline
             struct ConnectionToClose: Equatable {
-                var cancelIdleTimer: Bool
-                var cancelKeepAliveTimer: Bool
-                var connection: Connection
+                @usableFromInline var cancelIdleTimer: Bool
+                @usableFromInline var cancelKeepAliveTimer: Bool
+                @usableFromInline var connection: Connection
 
+                @inlinable
+                init(cancelIdleTimer: Bool, cancelKeepAliveTimer: Bool, connection: Connection) {
+                    self.cancelIdleTimer = cancelIdleTimer
+                    self.cancelKeepAliveTimer = cancelKeepAliveTimer
+                    self.connection = connection
+                }
+
+                @inlinable
                 static func ==(lhs: Self, rhs: Self) -> Bool {
                     lhs.cancelIdleTimer == rhs.cancelIdleTimer && lhs.cancelKeepAliveTimer == rhs.cancelKeepAliveTimer && lhs.connection === rhs.connection
                 }
             }
 
-            var connections: [ConnectionToClose]
-            var backoffTimersToCancel: [ConnectionID]
+            @usableFromInline var connections: [ConnectionToClose]
+            @usableFromInline var backoffTimersToCancel: [ConnectionID]
 
             init() {
                 self.connections = []
@@ -83,6 +228,7 @@ struct PoolStateMachine<
 
         case none
 
+        @usableFromInline
         static func ==(lhs: Self, rhs: Self) -> Bool {
             switch (lhs, rhs) {
             case (.createConnection(let lhs), .createConnection(let rhs)):
@@ -115,20 +261,28 @@ struct PoolStateMachine<
         }
     }
 
+    @usableFromInline
     enum RequestAction: Equatable {
-        case leaseConnection(Request, Connection, cancelTimeout: Bool)
+        case leaseConnection(RequestCollection<Request>, Connection, cancelTimeout: Bool)
 
         case failRequest(Request, PoolError, cancelTimeout: Bool)
-        case failRequestsAndCancelTimeouts([Request], PoolError)
+        case failRequestsAndCancelTimeouts(RequestCollection<Request>, PoolError)
 
         case scheduleRequestTimeout(for: Request, on: EventLoop)
 
         case none
 
+        @usableFromInline
         static func ==(lhs: Self, rhs: Self) -> Bool {
             switch (lhs, rhs) {
-            case (.leaseConnection(let lhsRequest, let lhsConn, let lhsCancel), .leaseConnection(let rhsRequest, let rhsConn, let rhsCancel)):
-                return lhsRequest.id == rhsRequest.id && lhsConn === rhsConn && lhsCancel == rhsCancel
+            case (.leaseConnection(let lhsRequests, let lhsConn, let lhsCancel), .leaseConnection(let rhsRequests, let rhsConn, let rhsCancel)):
+                guard lhsRequests.count == rhsRequests.count else { return false }
+                var lhsIterator = lhsRequests.makeIterator()
+                var rhsIterator = rhsRequests.makeIterator()
+                while let lhsNext = lhsIterator.next(), let rhsNext = rhsIterator.next() {
+                    guard lhsNext.id == rhsNext.id else { return false }
+                }
+                return lhsConn === rhsConn && lhsCancel == rhsCancel
             case (.failRequest(let lhsRequest, let lhsError, let lhsCancel), .failRequest(let rhsRequest, let rhsError, let rhsCancel)):
                 return lhsRequest.id == rhsRequest.id && lhsError == rhsError && lhsCancel == rhsCancel
             case (.failRequestsAndCancelTimeouts(let lhsRequests, let lhsError), .failRequestsAndCancelTimeouts(let rhsRequests, let rhsError)):
@@ -143,33 +297,48 @@ struct PoolStateMachine<
         }
     }
 
-    private enum PoolState {
+    @usableFromInline
+    enum PoolState {
         case running
         case shuttingDown(graceful: Bool, promise: EventLoopPromise<Void>)
         case shutDown
     }
 
+    @usableFromInline
     struct ConnectionRequest: Equatable {
-        var eventLoop: any EventLoop
-        var connectionID: ConnectionID
+        @usableFromInline var eventLoop: any EventLoop
+        @usableFromInline var connectionID: ConnectionID
 
+        @usableFromInline
+        init(eventLoop: any EventLoop, connectionID: ConnectionID) {
+            self.eventLoop = eventLoop
+            self.connectionID = connectionID
+        }
+
+        @usableFromInline
         static func ==(lhs: Self, rhs: Self) -> Bool {
             lhs.connectionID == rhs.connectionID && lhs.eventLoop === rhs.eventLoop
         }
     }
 
-    private let configuration: PoolConfiguration
-    private let generator: ConnectionIDGenerator
-    private let eventLoops: [any EventLoop]
-    private let eventLoopGroup: any EventLoopGroup
+    @usableFromInline let configuration: PoolConfiguration
+    @usableFromInline let generator: ConnectionIDGenerator
+    @usableFromInline let eventLoops: [any EventLoop]
+    @usableFromInline let eventLoopGroup: any EventLoopGroup
 
-    private var connections: [EventLoopID: EventLoopConnections]
-    private var requestQueue: RequestQueue
-    private var poolState: PoolState = .running
+    @usableFromInline
+    private(set) var connections: [EventLoopID: EventLoopConnections]
+    @usableFromInline
+    private(set) var requestQueue: RequestQueue
+    @usableFromInline
+    private(set) var poolState: PoolState = .running
+    @usableFromInline
+    private(set) var cacheNoMoreConnectionsAllowed: Bool = false
 
-    private var failedConsecutiveConnectionAttempts: Int = 0
+    @usableFromInline
+    private(set) var failedConsecutiveConnectionAttempts: Int = 0
     
-
+    @inlinable
     init(
         configuration: PoolConfiguration,
         generator: ConnectionIDGenerator,
@@ -248,19 +417,30 @@ struct PoolStateMachine<
         return request
     }
 
+    @inlinable
     mutating func leaseConnection(_ request: Request) -> Action {
-        func connectionActionForLease(_ connectionID: ConnectionID, use: EventLoopConnections.ConnectionUse) -> ConnectionAction {
-            switch (self.configuration.keepAlive, use) {
-            case (true, .demand):
-                return .cancelKeepAliveAndIdleTimeoutTimer(connectionID)
-            case (false, .demand):
-                return .cancelIdleTimeoutTimer(connectionID)
-            case (true, .persisted):
-                return .cancelKeepAliveTimer(connectionID)
-            case (false, .persisted):
+        func connectionActionForLease(_ connectionID: ConnectionID, info: ConnectionLeasedInfo) -> ConnectionAction {
+            switch (self.configuration.keepAlive, info.use, info.wasIdle) {
+            case (_, .demand, false), (_, .persisted, false):
                 return .none
-            case (_, .overflow):
+            case (true, .demand, true):
+                return .cancelKeepAliveAndIdleTimeoutTimer(connectionID)
+            case (false, .demand, true):
+                return .cancelIdleTimeoutTimer(connectionID)
+            case (true, .persisted, true):
+                return .cancelKeepAliveTimer(connectionID)
+            case (false, .persisted, true):
+                return .none
+            case (_, .overflow, _):
                 preconditionFailure("Overflow connections should never be available on fast turn around")
+            }
+        }
+
+        func requestActionForQueue(_ request: Request) -> RequestAction {
+            if request.deadline != nil {
+                return .scheduleRequestTimeout(for: request, on: request.preferredEventLoop ?? self.eventLoopGroup.any())
+            } else {
+                return .none
             }
         }
 
@@ -275,12 +455,20 @@ struct PoolStateMachine<
             )
         }
 
+        if !self.requestQueue.isEmpty && self.cacheNoMoreConnectionsAllowed {
+            self.requestQueue.queue(request)
+            return .init(
+                request: requestActionForQueue(request),
+                connection: .none
+            )
+        }
+
         // check if the preferredEL has an idle connection
         if let preferredEL = request.preferredEventLoop {
-            if let (connection, use) = self.connections[preferredEL.id]!.leaseConnection() {
+            if let (connection, info) = self.connections[preferredEL.id]!.leaseConnection() {
                 return .init(
-                    request: .leaseConnection(request, connection, cancelTimeout: false),
-                    connection: connectionActionForLease(connection.id, use: use)
+                    request: .leaseConnection(.init(request), connection, cancelTimeout: false),
+                    connection: connectionActionForLease(connection.id, info: info)
                 )
             }
         }
@@ -293,11 +481,11 @@ struct PoolStateMachine<
             switch connections.leaseConnectionOrSoonAvailableConnectionCount() {
             case .startingCount(let count):
                 soonAvailable += count
-            case .leasedConnection(let connection, let use):
+            case .leasedConnection(let connection, let info):
                 self.connections[key] = connections
                 return .init(
-                    request: .leaseConnection(request, connection, cancelTimeout: false),
-                    connection: connectionActionForLease(connection.id, use: use)
+                    request: .leaseConnection(.init(request), connection, cancelTimeout: false),
+                    connection: connectionActionForLease(connection.id, info: info)
                 )
             }
         }
@@ -307,7 +495,7 @@ struct PoolStateMachine<
 
         self.requestQueue.queue(request)
 
-        let requestAction: RequestAction = .scheduleRequestTimeout(for: request, on: request.preferredEventLoop ?? self.eventLoopGroup.any())
+        let requestAction: RequestAction = requestActionForQueue(request)
 
         if soonAvailable >= self.requestQueue.count {
             // if more connections will be soon available then we have waiters, we don't need to
@@ -352,7 +540,7 @@ struct PoolStateMachine<
             }
         }
 
-        // check if any other EL has an idle connection
+        // check if any other EL has more space
         for index in RandomStartIndexIterator(self.connections) {
             var (key, connections) = self.connections[index]
             if let request = connections.createNewOverflowConnectionIfPossible() {
@@ -364,10 +552,13 @@ struct PoolStateMachine<
             }
         }
 
+        self.cacheNoMoreConnectionsAllowed = true
+
         // no new connections allowed:
         return .init(request: requestAction, connection: .none)
     }
 
+    @inlinable
     mutating func releaseConnection(_ connection: Connection, streams: UInt16) -> Action {
         let eventLoopID = EventLoopID(connection.eventLoop)
         let (index, context) = self.connections[eventLoopID]!.releaseConnection(connection.id, streams: streams)
@@ -385,6 +576,7 @@ struct PoolStateMachine<
         )
     }
 
+    @inlinable
     mutating func timeoutRequest(id: RequestID) -> Action {
         guard let request = self.requestQueue.remove(id) else {
             return .none()
@@ -396,12 +588,14 @@ struct PoolStateMachine<
         )
     }
 
+    @inlinable
     mutating func connectionEstablished(_ connection: Connection, maxStreams: UInt16) -> Action {
         let eventLoopID = EventLoopID(connection.eventLoop)
         let (index, context) = self.connections[eventLoopID]!.newConnectionEstablished(connection, maxStreams: maxStreams)
         return self.handleAvailableConnection(eventLoopID, index: index, availableContext: context)
     }
 
+    @inlinable
     mutating func connectionEstablishFailed(_ error: Error, for request: ConnectionRequest) -> Action {
         self.failedConsecutiveConnectionAttempts += 1
 
@@ -411,6 +605,7 @@ struct PoolStateMachine<
         return .init(request: .none, connection: .scheduleBackoffTimer(request.connectionID, backoff: backoff, on: eventLoop))
     }
 
+    @inlinable
     mutating func connectionCreationBackoffDone(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
         let eventLoopID = EventLoopID(eventLoop)
 
@@ -427,6 +622,7 @@ struct PoolStateMachine<
         }
     }
 
+    @inlinable
     mutating func connectionKeepAliveTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
         precondition(self.configuration.keepAlive)
         precondition(self.requestQueue.isEmpty)
@@ -437,6 +633,7 @@ struct PoolStateMachine<
         return .init(request: .none, connection: .runKeepAlive(connection))
     }
 
+    @inlinable
     mutating func connectionKeepAliveDone(_ connection: Connection) -> Action {
         precondition(self.configuration.keepAlive)
         let eventLoopID = EventLoopID(connection.eventLoop)
@@ -446,17 +643,22 @@ struct PoolStateMachine<
         return self.handleAvailableConnection(eventLoopID, index: index, availableContext: context)
     }
 
+    @inlinable
     mutating func connectionIdleTimerTriggered(_ connectionID: ConnectionID, on eventLoop: EventLoop) -> Action {
         precondition(self.requestQueue.isEmpty)
 
         guard let (connection, cancelKeepAliveTimer) = self.connections[.init(eventLoop)]!.closeConnectionIfIdle(connectionID) else {
             return .none()
         }
+
+        self.cacheNoMoreConnectionsAllowed = false
+
         return .init(request: .none, connection: .closeConnection(connection, cancelKeepAliveTimer: cancelKeepAliveTimer))
     }
 
+    @inlinable
     mutating func connectionClosed(_ connection: Connection) -> Action {
-        //fatalError()
+        self.cacheNoMoreConnectionsAllowed = false
         return .none()
     }
 
@@ -498,15 +700,26 @@ struct PoolStateMachine<
         }
     }
 
-    private mutating func handleAvailableConnection(
+    @inlinable
+    /*private*/ mutating func handleAvailableConnection(
         _ eventLoopID: EventLoopID,
         index: Int,
         availableContext: EventLoopConnections.AvailableConnectionContext
     ) -> Action {
-        if let request = self.requestQueue.pop(for: eventLoopID) {
-            let connection = self.connections[eventLoopID]!.leaseConnection(at: index)
+        // this connection was busy before
+        var requests = RequestCollection<Request>()
+        requests.reserveCapacity(Int(availableContext.info.availableStreams))
+        for _ in 0..<availableContext.info.availableStreams {
+            if let request = self.requestQueue.pop(for: eventLoopID) {
+                requests.append(request)
+            } else {
+                break
+            }
+        }
+        if !requests.isEmpty {
+            let (connection, _) = self.connections[eventLoopID]!.leaseConnection(at: index, streams: UInt16(requests.count))
             return .init(
-                request: .leaseConnection(request, connection, cancelTimeout: true),
+                request: .leaseConnection(requests, connection, cancelTimeout: true),
                 connection: .none
             )
         }
@@ -524,15 +737,15 @@ struct PoolStateMachine<
             }
         }
 
-        switch availableContext.use {
-        case .persisted:
+        switch (availableContext.use, availableContext.info) {
+        case (.persisted, .idle):
             let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
             return .init(
                 request: .none,
                 connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: false)
             )
 
-        case .demand:
+        case (.demand, .idle):
             let connectionID = self.connections[eventLoopID]!.parkConnection(at: index)
             guard case .idle(availableStreams: _, let newIdle) = availableContext.info else {
                 preconditionFailure()
@@ -542,9 +755,12 @@ struct PoolStateMachine<
                 connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: newIdle)
             )
 
-        case .overflow:
+        case (.overflow, .idle):
             let connection = self.connections[eventLoopID]!.closeConnection(at: index)
             return .init(request: .none, connection: .closeConnection(connection, cancelKeepAliveTimer: false))
+
+        case (_, .leased):
+            return .none()
         }
     }
 }
@@ -564,6 +780,7 @@ extension PoolStateMachine {
     ///
     /// - Parameter attempts: number of failed attempts in a row
     /// - Returns: time to wait until trying to establishing a new connection
+    @usableFromInline
     static func calculateBackoff(failedAttempt attempts: Int) -> TimeAmount {
         // Our backoff formula is: 100ms * 1.25^(attempts - 1) that is capped of at 1minute
         // This means for:
@@ -593,29 +810,36 @@ extension PoolStateMachine {
 
 }
 
+@usableFromInline
 struct EventLoopID: Hashable {
+    @usableFromInline
     var objectID: ObjectIdentifier
 
+    @inlinable
     init(_ eventLoop: EventLoop) {
         self.objectID = ObjectIdentifier(eventLoop)
     }
 }
 
 extension EventLoop {
+    @inlinable
     var id: EventLoopID { .init(self) }
 }
 
+@usableFromInline
 struct RandomStartIndexIterator<Collection: Swift.Collection>: Sequence, IteratorProtocol {
-    private let collection: Collection
-    private let startIndex: Collection.Index?
-    private var index: Collection.Index?
+    @usableFromInline let collection: Collection
+    @usableFromInline let startIndex: Collection.Index?
+    @usableFromInline private(set) var index: Collection.Index?
 
+    @inlinable
     init(_ collection: Collection) {
         self.collection = collection
         self.startIndex = collection.indices.randomElement()
         self.index = self.startIndex
     }
 
+    @inlinable
     mutating func next() -> Collection.Index? {
         guard let index = self.index else { return nil }
         defer {
@@ -632,6 +856,7 @@ struct RandomStartIndexIterator<Collection: Swift.Collection>: Sequence, Iterato
         return index
     }
 
+    @inlinable
     func makeIterator() -> RandomStartIndexIterator<Collection> {
         self
     }

@@ -12,7 +12,7 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
 
     public var preferredEventLoop: NIOCore.EventLoop?
 
-    public var deadline: NIOCore.NIODeadline
+    public var deadline: NIOCore.NIODeadline?
 
     private var reportingMechanism: AsyncReportingMechanism
 
