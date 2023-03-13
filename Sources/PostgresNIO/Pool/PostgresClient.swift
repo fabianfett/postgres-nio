@@ -184,6 +184,10 @@ public final class PostgresClient: Sendable {
 }
 
 struct PostgresConnectionFactory: ConnectionFactory {
+    typealias ConnectionIDGenerator = PoolModule.ConnectionIDGenerator
+    typealias Request = PoolModule.ConnectionRequest<PostgresConnection>
+    typealias KeepAliveBehavior = PostgresKeepAliveBehavor
+    typealias MetricsDelegate = PostgresClientMetrics
     typealias ConnectionID = Int
     typealias Connection = PostgresConnection
 
@@ -195,7 +199,7 @@ struct PostgresConnectionFactory: ConnectionFactory {
         self.logger = logger
     }
 
-    func makeConnection(on eventLoop: NIOCore.EventLoop, id: Int, for pool: PoolModule.ConnectionPool<PostgresConnectionFactory, PostgresConnection, Int, some PoolModule.ConnectionIDGeneratorProtocol, some PoolModule.ConnectionRequestProtocol, some Hashable, some PoolModule.ConnectionKeepAliveBehavior, some PoolModule.ConnectionPoolMetricsDelegate>) -> NIOCore.EventLoopFuture<ConnectionAndMetadata<PostgresConnection>> {
+    func makeConnection(on eventLoop: EventLoop, id: Int, for pool: ConnectionPool<PostgresConnectionFactory, PostgresConnection, Int, ConnectionIDGenerator, PoolModule.ConnectionRequest<PostgresConnection>, Int, PostgresKeepAliveBehavor, PostgresClientMetrics>) -> EventLoopFuture<ConnectionAndMetadata<PostgresConnection>> {
         var connectionLogger = self.logger
         connectionLogger[postgresMetadataKey: .connectionID] = "\(id)"
 
