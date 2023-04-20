@@ -31,6 +31,18 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
         XCTAssertNoThrow(try conn?.close().wait())
     }
+    
+    func testConnectUDSAndClose() throws {
+        try XCTSkipUnless(env("POSTGRES_SOCKET") != nil)
+        let conn = try PostgresConnection.testUDS(on: eventLoop).wait()
+        try conn.close().wait()
+    }
+    
+    func testConnectEstablishedChannelAndClose() throws {
+        let channel = try ClientBootstrap(group: self.group).connect(to: PostgresConnection.address()).wait()
+        let conn = try PostgresConnection.testChannel(channel, on: self.eventLoop).wait()
+        try conn.close().wait()
+    }
 
     func testSimpleQueryVersion() {
         var conn: PostgresConnection?
@@ -40,6 +52,27 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertNoThrow(rows = try conn?.simpleQuery("SELECT version()").wait())
         XCTAssertEqual(rows?.count, 1)
         XCTAssertEqual(try rows?.first?.decode(String.self, context: .default).contains("PostgreSQL"), true)
+    }
+
+    func testSimpleQueryVersionUsingUDS() throws {
+        try XCTSkipUnless(env("POSTGRES_SOCKET") != nil)
+        var conn: PostgresConnection?
+        XCTAssertNoThrow(conn = try PostgresConnection.testUDS(on: eventLoop).wait())
+        defer { XCTAssertNoThrow( try conn?.close().wait() ) }
+        var rows: [PostgresRow]?
+        XCTAssertNoThrow(rows = try conn?.simpleQuery("SELECT version()").wait())
+        XCTAssertEqual(rows?.count, 1)
+        XCTAssertEqual(try rows?.first?.decode(String.self, context: .default).contains("PostgreSQL"), true)
+    }
+
+    func testSimpleQueryVersionUsingEstablishedChannel() throws {
+        let channel = try ClientBootstrap(group: self.group).connect(to: PostgresConnection.address()).wait()
+        let conn = try PostgresConnection.testChannel(channel, on: self.eventLoop).wait()
+        defer { XCTAssertNoThrow(try conn.close().wait()) }
+
+        let rows = try conn.simpleQuery("SELECT version()").wait()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(try rows.first?.decode(String.self, context: .default).contains("PostgreSQL"), true)
     }
 
     func testQueryVersion() {
@@ -531,6 +564,7 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertEqual(row?[data: "e"].string, "12345678.90")
     }
 
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testIntegerArrayParse() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -544,6 +578,7 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertEqual(row?[data: "array"].array(of: Int.self), [1, 2, 3])
     }
 
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testEmptyIntegerArrayParse() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -556,7 +591,8 @@ final class PostgresNIOTests: XCTestCase {
         let row = rows?.first?.makeRandomAccess()
         XCTAssertEqual(row?[data: "array"].array(of: Int.self), [])
     }
-    
+
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testOptionalIntegerArrayParse() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -570,6 +606,7 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertEqual(row?[data: "array"].array(of: Int?.self), [1, 2, nil, 4])
     }
 
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testNullIntegerArrayParse() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -583,6 +620,7 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertEqual(row?[data: "array"].array(of: Int.self), nil)
     }
 
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testIntegerArraySerialize() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -598,6 +636,7 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertEqual(row?[data: "array"].array(of: Int.self), [1, 2, 3])
     }
 
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testEmptyIntegerArraySerialize() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -612,7 +651,8 @@ final class PostgresNIOTests: XCTestCase {
         let row = rows?.first?.makeRandomAccess()
         XCTAssertEqual(row?[data: "array"].array(of: Int.self), [])
     }
-    
+
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testOptionalIntegerArraySerialize() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -737,19 +777,13 @@ final class PostgresNIOTests: XCTestCase {
         let logger = Logger(label: "test")
         let sslContext = try! NIOSSLContext(configuration: .makeClientConfiguration())
         let config = PostgresConnection.Configuration(
-            connection: .init(
-                host: "elmer.db.elephantsql.com",
-                port: 5432
-            ),
-            authentication: .init(
-                username: "uymgphwj",
-                database: "uymgphwj",
-                password: "7_tHbREdRwkqAdu4KoIS7hQnNxr8J1LA"
-            ),
+            host: "elmer.db.elephantsql.com",
+            port: 5432,
+            username: "uymgphwj",
+            password: "7_tHbREdRwkqAdu4KoIS7hQnNxr8J1LA",
+            database: "uymgphwj",
             tls: .require(sslContext)
         )
-
-
         XCTAssertNoThrow(conn = try PostgresConnection.connect(on: eventLoop, configuration: config, id: 0, logger: logger).wait())
         defer { XCTAssertNoThrow( try conn?.close().wait() ) }
         var rows: [PostgresRow]?
@@ -855,6 +889,7 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertEqual(row?[data: "t2_dateValue"].date, dateInTable2)
     }
 
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testStringArrays() {
         let query = """
         SELECT
@@ -936,6 +971,7 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertEqual(row?[data: "char"].string, "*")
     }
 
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testDoubleArraySerialization() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -1057,6 +1093,7 @@ final class PostgresNIOTests: XCTestCase {
         XCTAssertEqual(row?[data: "foo"].string, "qux")
     }
 
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testNullBind() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())
@@ -1093,7 +1130,7 @@ final class PostgresNIOTests: XCTestCase {
         defer { XCTAssertNoThrow( try conn?.close().wait() ) }
         let binds = [PostgresData].init(repeating: .null, count: Int(UInt16.max) + 1)
         XCTAssertThrowsError(try conn?.query("SELECT version()", binds).wait()) { error in
-            guard case .tooManyParameters = (error as? PSQLError)?.base else {
+            guard case .tooManyParameters = (error as? PSQLError)?.code.base else {
                 return XCTFail("Unexpected error: \(error)")
             }
         }
@@ -1106,6 +1143,7 @@ final class PostgresNIOTests: XCTestCase {
     }
 
     // https://github.com/vapor/postgres-nio/issues/113
+    @available(*, deprecated, message: "Testing deprecated functionality")
     func testVaryingCharArray() {
         var conn: PostgresConnection?
         XCTAssertNoThrow(conn = try PostgresConnection.test(on: eventLoop).wait())

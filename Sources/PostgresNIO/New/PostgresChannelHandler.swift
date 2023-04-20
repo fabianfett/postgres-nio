@@ -36,7 +36,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
          logger: Logger,
          configureSSLCallback: ((Channel) throws -> Void)?)
     {
-        self.state = ConnectionStateMachine(requireBackendKeyData: configuration.requireBackendKeyData)
+        self.state = ConnectionStateMachine(requireBackendKeyData: configuration.options.requireBackendKeyData)
         self.configuration = configuration
         self.configureSSLCallback = configureSSLCallback
         self.logger = logger
@@ -95,7 +95,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
     
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         self.logger.debug("Channel error caught.", metadata: [.error: "\(error)"])
-        let action = self.state.errorHappened(.channel(underlying: error))
+        let action = self.state.errorHappened(.connectionError(underlying: error))
         self.run(action, with: context)
     }
     
@@ -150,8 +150,8 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
                 
                 self.run(action, with: context)
             }
-        } catch let error as PSQLDecodingError {
-            let action = self.state.errorHappened(.decoding(error))
+        } catch let error as PostgresMessageDecodingError {
+            let action = self.state.errorHappened(.messageDecodingFailure(error))
             self.run(action, with: context)
         } catch {
             preconditionFailure("Expected to only get PSQLDecodingErrors from the PSQLBackendMessageDecoder.")
@@ -288,11 +288,11 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
         case .provideAuthenticationContext:
             context.fireUserInboundEventTriggered(PSQLEvent.readyForStartup)
             
-            if let authentication = self.configuration.authentication {
+            if let username = self.configuration.username {
                 let authContext = AuthContext(
-                    username: authentication.username,
-                    password: authentication.password,
-                    database: authentication.database
+                    username: username,
+                    password: self.configuration.password,
+                    database: self.configuration.database
                 )
                 let action = self.state.provideAuthenticationContext(authContext)
                 return self.run(action, with: context)
@@ -521,16 +521,6 @@ extension PostgresChannelHandler: PSQLRowsDataSource {
     }
 }
 
-extension PostgresConnection.Configuration.Authentication {
-    func toAuthContext() -> AuthContext {
-        AuthContext(
-            username: self.username,
-            password: self.password,
-            database: self.database
-        )
-    }
-}
-
 extension AuthContext {
     func toStartupParameters() -> PostgresFrontendMessage.Startup.Parameters {
         PostgresFrontendMessage.Startup.Parameters(
@@ -581,12 +571,12 @@ private extension Insecure.MD5.Digest {
 
 extension ConnectionStateMachine.TLSConfiguration {
     fileprivate init(_ tls: PostgresConnection.Configuration.TLS) {
-        switch tls.base {
-        case .disable:
+        switch (tls.isAllowed, tls.isEnforced) {
+        case (false, _):
             self = .disable
-        case .require:
+        case (true, true):
             self = .require
-        case .prefer:
+        case (true, false):
             self = .prefer
         }
     }

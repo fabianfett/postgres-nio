@@ -7,7 +7,7 @@ import class Foundation.JSONDecoder
 /// - Warning: Please note that random access to cells in a ``PostgresRow`` have O(n) time complexity. If you require
 ///            random access to cells in O(1) create a new ``PostgresRandomAccessRow`` with the given row and
 ///            access it instead.
-public struct PostgresRow {
+public struct PostgresRow: Sendable {
     @usableFromInline
     let lookupTable: [String: Int]
     @usableFromInline
@@ -138,7 +138,7 @@ public struct PostgresRandomAccessRow {
     }
 }
 
-extension PostgresRandomAccessRow: RandomAccessCollection {
+extension PostgresRandomAccessRow: Sendable, RandomAccessCollection {
     public typealias Element = PostgresCell
     public typealias Index = Int
 
@@ -265,6 +265,7 @@ extension PostgresRandomAccessRow {
 // MARK: Deprecated API
 
 extension PostgresRow {
+    @available(*, deprecated, message: "Will be removed from public API.")
     public var rowDescription: PostgresMessage.RowDescription {
         let fields = self.columns.map { column in
             PostgresMessage.RowDescription.Field(
@@ -280,6 +281,7 @@ extension PostgresRow {
         return PostgresMessage.RowDescription(fields: fields)
     }
 
+    @available(*, deprecated, message: "Iterate the cells on `PostgresRow` instead.")
     public var dataRow: PostgresMessage.DataRow {
         let columns = self.data.map {
             PostgresMessage.DataRow.Column(value: $0)
@@ -320,9 +322,3 @@ extension PostgresRow: CustomStringConvertible {
         return row.description
     }
 }
-
-#if swift(>=5.6)
-extension PostgresRow: Sendable {}
-
-extension PostgresRandomAccessRow: Sendable {}
-#endif
