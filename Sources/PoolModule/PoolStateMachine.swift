@@ -350,7 +350,7 @@ struct PoolStateMachine<
         self.eventLoopGroup = eventLoopGroup
         self.connections = [:]
         self.connections.reserveCapacity(self.eventLoops.count)
-        self.requestQueue = .init(
+        self.requestQueue = RequestQueue(
             eventLoopGroup: eventLoopGroup,
             maxConsecutivePicksFromEventLoopQueue: configuration.maxConsecutivePicksFromEventLoopQueue
         )

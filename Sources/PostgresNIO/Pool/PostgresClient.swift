@@ -248,11 +248,11 @@ extension ConnectionPoolConfiguration {
 extension PostgresConnection.Configuration {
     init(_ config: PostgresClient.Configuration) throws {
         try self.init(
-            connection: .init(host: config.server.host, port: config.server.port),
-            authentication: .init(
-                username: config.authentication.username,
-                database: config.authentication.database,
-                password: config.authentication.password),
+            host: config.server.host,
+            port: config.server.port,
+            username: config.authentication.username,
+            password: config.authentication.password,
+            database: config.authentication.database,
             tls: .init(config.tls)
         )
     }

@@ -24,45 +24,62 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.2"),
     ],
     targets: [
-        .target(name: "PostgresNIO", dependencies: [
-            .target(name: "PoolModule"),
-            .product(name: "Atomics", package: "swift-atomics"),
-            .product(name: "Crypto", package: "swift-crypto"),
-            .product(name: "DequeModule", package: "swift-collections"),
-            .product(name: "Logging", package: "swift-log"),
-            .product(name: "Metrics", package: "swift-metrics"),
-            .product(name: "NIO", package: "swift-nio"),
-            .product(name: "NIOCore", package: "swift-nio"),
-            .product(name: "NIOPosix", package: "swift-nio"),
-            .product(name: "NIOTransportServices", package: "swift-nio-transport-services"),
-            .product(name: "NIOTLS", package: "swift-nio"),
-            .product(name: "NIOSSL", package: "swift-nio-ssl"),
-            .product(name: "NIOFoundationCompat", package: "swift-nio"),
-        ]),
-        .target(name: "PoolModule", dependencies: [
-            .product(name: "Atomics", package: "swift-atomics"),
-            .product(name: "DequeModule", package: "swift-collections"),
-            .product(name: "NIOCore", package: "swift-nio"),
-            .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
-        ]),
-        .testTarget(name: "PostgresNIOTests", dependencies: [
-            .target(name: "PostgresNIO"),
-            .product(name: "NIOEmbedded", package: "swift-nio"),
-            .product(name: "NIOTestUtils", package: "swift-nio"),
-        ]),
-        .testTarget(name: "PoolModuleTests", dependencies: [
-            .target(name: "PoolModule"),
-            .product(name: "DequeModule", package: "swift-collections"),
-            .product(name: "NIOCore", package: "swift-nio"),
-            .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
-            .product(name: "NIOEmbedded", package: "swift-nio"),
-        ]),
-        .testTarget(name: "IntegrationTests", dependencies: [
-            .target(name: "PostgresNIO"),
-            .product(name: "NIOTestUtils", package: "swift-nio"),
-        ]),
-        .executableTarget(name: "PoolDemo", dependencies: [
-            .target(name: "PostgresNIO"),
-        ])
+        .target(
+            name: "PostgresNIO",
+            dependencies: [
+                .target(name: "PoolModule"),
+                .product(name: "Atomics", package: "swift-atomics"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "NIO", package: "swift-nio"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOTransportServices", package: "swift-nio-transport-services"),
+                .product(name: "NIOTLS", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
+            ]
+        ),
+        .target(
+            name: "PoolModule",
+            dependencies: [
+                .product(name: "Atomics", package: "swift-atomics"),
+                .product(name: "DequeModule", package: "swift-collections"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
+            ]
+        ),
+        .testTarget(
+            name: "PostgresNIOTests",
+            dependencies: [
+                .target(name: "PostgresNIO"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+                .product(name: "NIOTestUtils", package: "swift-nio"),
+            ]
+        ),
+        .testTarget(
+            name: "PoolModuleTests",
+            dependencies: [
+                .target(name: "PoolModule"),
+                .product(name: "DequeModule", package: "swift-collections"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+            ]
+        ),
+        .testTarget(
+            name: "IntegrationTests",
+            dependencies: [
+                .target(name: "PostgresNIO"),
+                .product(name: "NIOTestUtils", package: "swift-nio"),
+            ]
+        ),
+        .executableTarget(
+            name: "PoolDemo",
+            dependencies: [
+                .target(name: "PostgresNIO"),
+            ]
+        ),
     ]
 )
