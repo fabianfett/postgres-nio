@@ -1,6 +1,7 @@
 import NIOCore
 import struct Foundation.UUID
 
+@available(*, deprecated, message: "PostgresNIO will not provide a Postgres abstraction going forward.")
 extension PostgresDatabase {
     public func prepare(query: String) -> EventLoopFuture<PreparedQuery> {
         let name = "nio-postgres-\(UUID().uuidString)"
@@ -25,7 +26,7 @@ extension PostgresDatabase {
     }
 }
 
-
+@available(*, deprecated, message: "Deprecating conformance to `PostgresDataConvertible`, since it is deprecated.")
 public struct PreparedQuery {
     let underlying: PSQLPreparedStatement
     let database: PostgresDatabase
@@ -53,8 +54,6 @@ public struct PreparedQuery {
 final class PrepareQueryRequest {
     let query: String
     let name: String
-    var prepared: PreparedQuery? = nil
-    
     
     init(_ query: String, as name: String) {
         self.query = query

@@ -489,6 +489,7 @@ extension PostgresConnection {
 
 // MARK: PostgresDatabase conformance
 
+@available(*, deprecated, message: "Conformance is deprecated, since protocol is deprecated.")
 extension PostgresConnection: PostgresDatabase {
     public func send(
         _ request: PostgresRequest,
