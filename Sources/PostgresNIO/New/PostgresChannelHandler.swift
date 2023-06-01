@@ -143,7 +143,7 @@ final class PostgresChannelHandler: ChannelDuplexHandler {
                 case .rowDescription(let rowDescription):
                     action = self.state.rowDescriptionReceived(rowDescription)
                 case .sslSupported:
-                    action = self.state.sslSupportedReceived()
+                    action = self.state.sslSupportedReceived(unprocessedBytes: self.decoder.unprocessedBytes)
                 case .sslUnsupported:
                     action = self.state.sslUnsupportedReceived()
                 }
@@ -515,7 +515,6 @@ extension PostgresChannelHandler: PSQLRowsDataSource {
         guard self.rowStream === stream, let handlerContext = self.handlerContext else {
             return
         }
-        // we ignore this right now :)
         let action = self.state.cancelQueryStream()
         self.run(action, with: handlerContext)
     }

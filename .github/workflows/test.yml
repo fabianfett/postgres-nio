@@ -9,6 +9,8 @@ on:
   pull_request:
     branches: 
       - "*"
+env:
+  LOG_LEVEL: info
 
 jobs:
   linux-unit:
@@ -21,35 +23,26 @@ jobs:
           - swift:5.8-jammy
           - swiftlang/swift:nightly-5.9-jammy
           - swiftlang/swift:nightly-main-jammy
-        include:
-          - coverage: true
-          # https://github.com/apple/swift-package-manager/issues/5853
-          - container: swift:5.8-jammy
-            coverage: false
-          # https://github.com/apple/swift/issues/65064
-          - container: swiftlang/swift:nightly-main-jammy
-            coverage: false
     container: ${{ matrix.container }}
     runs-on: ubuntu-latest
-    env:
-      LOG_LEVEL: debug
     steps:
+      - name: Display OS and Swift versions
+        shell: bash
+        run: |
+          if [[ '${{ contains(matrix.container, 'nightly') }}' == 'true' ]]; then
+            SWIFT_PLATFORM="$(source /etc/os-release && echo "${ID}${VERSION_ID}")" SWIFT_VERSION="$(cat /.swift_tag)"
+            printf 'SWIFT_PLATFORM=%s\nSWIFT_VERSION=%s\n' "${SWIFT_PLATFORM}" "${SWIFT_VERSION}" >>"${GITHUB_ENV}"
+          fi
+          printf 'OS:  %s\nTag: %s\nVersion:\n' "${SWIFT_PLATFORM}-${RUNNER_ARCH}" "${SWIFT_VERSION}" && swift --version
       - name: Check out package
         uses: actions/checkout@v3
       - name: Run unit tests with code coverage and Thread Sanitizer
-        shell: bash
-        run: |
-          coverage=$( [[ '${{ matrix.coverage }}' == 'true' ]] && echo -n '--enable-code-coverage' || true )
-          swift test --filter=^PostgresNIOTests --sanitize=thread ${coverage}
+        run: swift test --filter=^PostgresNIOTests --sanitize=thread --enable-code-coverage
       - name: Submit coverage report to Codecov.io
-        if: ${{ matrix.coverage }}
         uses: vapor/swift-codecov-action@v0.2
         with:
-          cc_flags: 'unittests'
           cc_env_vars: 'SWIFT_VERSION,SWIFT_PLATFORM,RUNNER_OS,RUNNER_ARCH'
-          cc_fail_ci_if_error: true
-          cc_verbose: true
-          cc_dry_run: false
+          cc_fail_ci_if_error: false
 
   linux-integration-and-dependencies:
     if: github.event_name == 'pull_request'
@@ -72,7 +65,6 @@ jobs:
       volumes: [ 'pgrunshare:/var/run/postgresql' ]
     runs-on: ubuntu-latest
     env:
-      LOG_LEVEL: debug
       # Unfortunately, fluent-postgres-driver details leak through here
       POSTGRES_DB: 'test_database'
       POSTGRES_DB_A: 'test_database'
@@ -108,6 +100,9 @@ jobs:
           POSTGRES_HOST_AUTH_METHOD: ${{ matrix.dbauth }}
           POSTGRES_INITDB_ARGS: --auth-host=${{ matrix.dbauth }}
     steps:
+      - name: Display OS and Swift versions
+        run: |
+          printf 'OS:  %s\nTag: %s\nVersion:\n' "${SWIFT_PLATFORM}-${RUNNER_ARCH}" "${SWIFT_VERSION}" && swift --version
       - name: Check out package
         uses: actions/checkout@v3
         with: { path: 'postgres-nio' }
@@ -141,9 +136,8 @@ jobs:
           - scram-sha-256
         xcode:
           - latest-stable
-    runs-on: macos-12
+    runs-on: macos-13
     env:
-      LOG_LEVEL: debug
       POSTGRES_HOSTNAME: 127.0.0.1
       POSTGRES_USER: 'test_username'
       POSTGRES_PASSWORD: 'test_password'
@@ -158,8 +152,8 @@ jobs:
       - name: Install Postgres, setup DB and auth, and wait for server start
         run: |
           export PATH="$(brew --prefix)/opt/${{ matrix.dbimage }}/bin:$PATH" PGDATA=/tmp/vapor-postgres-test
-          (brew unlink postgresql || true) && brew install ${{ matrix.dbimage }} && brew link --force ${{ matrix.dbimage }}
-          initdb --locale=C --auth-host ${{ matrix.dbauth }} -U $POSTGRES_USER --pwfile=<(echo $POSTGRES_PASSWORD)
+          (brew unlink postgresql || true) && brew install '${{ matrix.dbimage }}' && brew link --force '${{ matrix.dbimage }}'
+          initdb --locale=C --auth-host '${{ matrix.dbauth }}' -U "${POSTGRES_USER}" --pwfile=<(echo "${POSTGRES_PASSWORD}")
           pg_ctl start --wait
         timeout-minutes: 2
       - name: Checkout code
@@ -172,24 +166,12 @@ jobs:
     runs-on: ubuntu-latest
     container: swift:5.8-jammy
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-    # https://github.com/actions/checkout/issues/766
-    - name: Mark the workspace as safe
-      run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
-    - name: API breaking changes
-      run: swift package diagnose-api-breaking-changes origin/main
-
-  test-exports:
-    name: Test exports
-    runs-on: ubuntu-latest
-    container: swift:5.8-jammy
-    steps:
-      - name: Check out package
+      - name: Checkout
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
-      - name: Build
-        run: swift build -Xswiftc -DBUILDING_DOCC
+      # https://github.com/actions/checkout/issues/766
+      - name: Mark the workspace as safe
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+      - name: API breaking changes
+        run: swift package diagnose-api-breaking-changes origin/main
