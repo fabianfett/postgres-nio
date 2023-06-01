@@ -98,9 +98,10 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
         XCTAssertEqual(connections.stats, .init(idle: 1, availableStreams: 1))
         XCTAssertEqual(connections.soonAvailable, 0)
 
-        guard case .leasedConnection(let leasedConnection, .demand) = connections.leaseConnectionOrSoonAvailableConnectionCount() else {
+        guard case .leasedConnection(let leasedConnection, let leaseContext) = connections.leaseConnectionOrSoonAvailableConnectionCount() else {
             return XCTFail("Expected to lease a connection")
         }
+        XCTAssertEqual(leaseContext.use, .demand)
         XCTAssert(newConnection === leasedConnection)
         XCTAssertEqual(connections.stats, .init(leased: 1, leasedStreams: 1))
 

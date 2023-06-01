@@ -75,6 +75,18 @@ struct RequestCollection<Element: ConnectionRequestProtocol>: Sequence {
         }
     }
 
+    @inlinable
+    var first: Element? {
+        switch self.base {
+        case .none:
+            return nil
+        case .one(let element, _):
+            return element
+        case .n(let array):
+            return array.first
+        }
+    }
+
     @usableFromInline
     var isEmpty: Bool {
         switch self.base {
@@ -263,32 +275,28 @@ struct PoolStateMachine<
 
     @usableFromInline
     enum RequestAction: Equatable {
-        case leaseConnection(RequestCollection<Request>, Connection, cancelTimeout: Bool)
+        case leaseConnection(RequestCollection<Request>, Connection)
 
-        case failRequest(Request, PoolError, cancelTimeout: Bool)
-        case failRequestsAndCancelTimeouts(RequestCollection<Request>, PoolError)
-
-        case scheduleRequestTimeout(for: Request, on: EventLoop)
+        case failRequest(Request, PoolError)
+        case failRequests(RequestCollection<Request>, PoolError)
 
         case none
 
         @usableFromInline
         static func ==(lhs: Self, rhs: Self) -> Bool {
             switch (lhs, rhs) {
-            case (.leaseConnection(let lhsRequests, let lhsConn, let lhsCancel), .leaseConnection(let rhsRequests, let rhsConn, let rhsCancel)):
+            case (.leaseConnection(let lhsRequests, let lhsConn), .leaseConnection(let rhsRequests, let rhsConn)):
                 guard lhsRequests.count == rhsRequests.count else { return false }
                 var lhsIterator = lhsRequests.makeIterator()
                 var rhsIterator = rhsRequests.makeIterator()
                 while let lhsNext = lhsIterator.next(), let rhsNext = rhsIterator.next() {
                     guard lhsNext.id == rhsNext.id else { return false }
                 }
-                return lhsConn === rhsConn && lhsCancel == rhsCancel
-            case (.failRequest(let lhsRequest, let lhsError, let lhsCancel), .failRequest(let rhsRequest, let rhsError, let rhsCancel)):
-                return lhsRequest.id == rhsRequest.id && lhsError == rhsError && lhsCancel == rhsCancel
-            case (.failRequestsAndCancelTimeouts(let lhsRequests, let lhsError), .failRequestsAndCancelTimeouts(let rhsRequests, let rhsError)):
+                return lhsConn === rhsConn
+            case (.failRequest(let lhsRequest, let lhsError), .failRequest(let rhsRequest, let rhsError)):
+                return lhsRequest.id == rhsRequest.id && lhsError == rhsError
+            case (.failRequests(let lhsRequests, let lhsError), .failRequests(let rhsRequests, let rhsError)):
                 return Set(lhsRequests.lazy.map(\.id)) == Set(rhsRequests.lazy.map(\.id)) && lhsError == rhsError
-            case (.scheduleRequestTimeout(for: let lhsRequest, on: let lhsEL), .scheduleRequestTimeout(for: let rhsRequest, on: let rhsEL)):
-                return lhsRequest.id == rhsRequest.id && lhsEL === rhsEL
             case (.none, .none):
                 return true
             default:
@@ -436,38 +444,27 @@ struct PoolStateMachine<
             }
         }
 
-        func requestActionForQueue(_ request: Request) -> RequestAction {
-            if request.deadline != nil {
-                return .scheduleRequestTimeout(for: request, on: request.preferredEventLoop ?? self.eventLoopGroup.any())
-            } else {
-                return .none
-            }
-        }
-
         switch self.poolState {
         case .running:
             break
 
         case .shuttingDown, .shutDown:
             return .init(
-                request: .failRequest(request, PoolError.poolShutdown, cancelTimeout: false),
+                request: .failRequest(request, PoolError.poolShutdown),
                 connection: .none
             )
         }
 
         if !self.requestQueue.isEmpty && self.cacheNoMoreConnectionsAllowed {
             self.requestQueue.queue(request)
-            return .init(
-                request: requestActionForQueue(request),
-                connection: .none
-            )
+            return .none()
         }
 
         // check if the preferredEL has an idle connection
         if let preferredEL = request.preferredEventLoop {
             if let (connection, info) = self.connections[preferredEL.id]!.leaseConnection() {
                 return .init(
-                    request: .leaseConnection(.init(request), connection, cancelTimeout: false),
+                    request: .leaseConnection(.init(request), connection),
                     connection: connectionActionForLease(connection.id, info: info)
                 )
             }
@@ -484,7 +481,7 @@ struct PoolStateMachine<
             case .leasedConnection(let connection, let info):
                 self.connections[key] = connections
                 return .init(
-                    request: .leaseConnection(.init(request), connection, cancelTimeout: false),
+                    request: .leaseConnection(.init(request), connection),
                     connection: connectionActionForLease(connection.id, info: info)
                 )
             }
@@ -495,7 +492,7 @@ struct PoolStateMachine<
 
         self.requestQueue.queue(request)
 
-        let requestAction: RequestAction = requestActionForQueue(request)
+        let requestAction = RequestAction.none
 
         if soonAvailable >= self.requestQueue.count {
             // if more connections will be soon available then we have waiters, we don't need to
@@ -571,19 +568,7 @@ struct PoolStateMachine<
         }
 
         return .init(
-            request: .failRequest(request, PoolError.requestCancelled, cancelTimeout: true),
-            connection: .none
-        )
-    }
-
-    @inlinable
-    mutating func timeoutRequest(id: RequestID) -> Action {
-        guard let request = self.requestQueue.remove(id) else {
-            return .none()
-        }
-
-        return .init(
-            request: .failRequest(request, PoolError.requestTimeout, cancelTimeout: false),
+            request: .failRequest(request, PoolError.requestCancelled),
             connection: .none
         )
     }
@@ -686,7 +671,7 @@ struct PoolStateMachine<
                 self.connections[key]!.shutdown(&shutdown)
             }
             return .init(
-                request: .failRequestsAndCancelTimeouts(self.requestQueue.removeAll(), PoolError.poolShutdown),
+                request: .failRequests(self.requestQueue.removeAll(), PoolError.poolShutdown),
                 connection: .shutdown(shutdown)
             )
 
@@ -719,7 +704,7 @@ struct PoolStateMachine<
         if !requests.isEmpty {
             let (connection, _) = self.connections[eventLoopID]!.leaseConnection(at: index, streams: UInt16(requests.count))
             return .init(
-                request: .leaseConnection(requests, connection, cancelTimeout: true),
+                request: .leaseConnection(requests, connection),
                 connection: .none
             )
         }

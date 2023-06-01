@@ -78,6 +78,14 @@ final class MockConnection: PooledConnection, @unchecked Sendable {
 }
 
 final class MockConnectionFactory: ConnectionFactory {
+    typealias ConnectionIDGenerator = PoolModule.ConnectionIDGenerator
+
+    typealias Request = ConnectionRequest<MockConnection>
+
+    typealias KeepAliveBehavior = MockPingPongBehavior
+
+    typealias MetricsDelegate = NoOpConnectionPoolMetrics<Int>
+
     typealias ConnectionID = Int
     typealias Connection = MockConnection
 
@@ -87,7 +95,7 @@ final class MockConnectionFactory: ConnectionFactory {
     func makeConnection(
         on eventLoop: NIOCore.EventLoop,
         id: Int,
-        for pool: PoolModule.ConnectionPool<MockConnectionFactory, MockConnection, Int, some PoolModule.ConnectionIDGeneratorProtocol, some PoolModule.ConnectionRequestProtocol, some Hashable, some PoolModule.ConnectionKeepAliveBehavior, some PoolModule.ConnectionPoolMetricsDelegate>) -> NIOCore.EventLoopFuture<PoolModule.ConnectionAndMetadata<MockConnection>> {
+        for pool: PoolModule.ConnectionPool<MockConnectionFactory, MockConnection, Int, ConnectionIDGenerator, ConnectionRequest<MockConnection>, Int, MockPingPongBehavior, NoOpConnectionPoolMetrics<Int>>) -> NIOCore.EventLoopFuture<PoolModule.ConnectionAndMetadata<MockConnection>> {
         let promise = eventLoop.makePromise(of: ConnectionAndMetadata<MockConnection>.self)
         self.lock.withLock {
             self._attempts.append((id, eventLoop, promise))

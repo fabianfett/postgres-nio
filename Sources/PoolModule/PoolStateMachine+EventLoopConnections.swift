@@ -412,7 +412,7 @@ extension PoolStateMachine {
 
         /// A connection's use. Is it persisted or an overflow connection?
         @usableFromInline
-        enum ConnectionUse {
+        enum ConnectionUse: Equatable {
             case persisted
             case demand
             case overflow

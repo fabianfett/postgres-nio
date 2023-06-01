@@ -22,9 +22,11 @@ final class PoolStateMachineTests: XCTestCase {
 
         let leaseRequest = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
         let leaseAction = stateMachine.leaseConnection(leaseRequest)
-        guard case .leaseConnection(leaseRequest, let leasedConnection, cancelTimeout: false) = leaseAction.request else {
+        guard case .leaseConnection(let requests, let leasedConnection) = leaseAction.request else {
             return XCTFail("Unexpected request action")
         }
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first, leaseRequest)
         XCTAssert(connections.contains(where: { $0.id == leasedConnection.id }))
 
         XCTAssertEqual(leaseAction.connection, .cancelKeepAliveTimer(leasedConnection.id))
@@ -43,9 +45,11 @@ final class PoolStateMachineTests: XCTestCase {
         for _ in 0..<2 {
             let leaseRequest = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
             let leaseAction = stateMachine.leaseConnection(leaseRequest)
-            guard case .leaseConnection(leaseRequest, let leasedConnection, cancelTimeout: false) = leaseAction.request else {
+            guard case .leaseConnection(let requests, let leasedConnection) = leaseAction.request else {
                 return XCTFail("Unexpected request action")
             }
+            XCTAssertEqual(requests.count, 1)
+            XCTAssertEqual(requests.first, leaseRequest)
             XCTAssert(connections.contains(where: { $0.id == leasedConnection.id }))
             XCTAssertEqual(leaseAction.connection, .cancelKeepAliveTimer(leasedConnection.id))
         }
@@ -53,7 +57,7 @@ final class PoolStateMachineTests: XCTestCase {
         let connRequests = (0..<4).compactMap { (_) -> (TestPoolStateMachine.ConnectionRequest, TestRequest<TestConnection>)? in
             let leaseRequest = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
             let leaseAction = stateMachine.leaseConnection(leaseRequest)
-            XCTAssertEqual(leaseAction.request, .scheduleRequestTimeout(for: leaseRequest, on: self.eventLoop))
+            XCTAssertEqual(leaseAction.request, .none)
             guard case .createConnection(let connRequest) = leaseAction.connection else {
                 XCTFail("Expected to get a connection creation action")
                 return nil
@@ -64,7 +68,7 @@ final class PoolStateMachineTests: XCTestCase {
         //
         let leaseRequest4 = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
         let leaseAction4 = stateMachine.leaseConnection(leaseRequest4)
-        XCTAssertEqual(leaseAction4.request, .scheduleRequestTimeout(for: leaseRequest4, on: self.eventLoop))
+        XCTAssertEqual(leaseAction4.request, .none)
         XCTAssertEqual(leaseAction4.connection, .none)
 
 //        guard case .leaseConnection(leaseRequest3, let leasedConnection, cancelTimeout: false) = leaseAction3.request else {

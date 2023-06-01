@@ -85,8 +85,6 @@ public protocol ConnectionRequestProtocol {
 
     var preferredEventLoop: EventLoop? { get }
 
-    var deadline: NIODeadline? { get }
-
     func complete(with: Result<Connection, PoolError>)
 }
 
@@ -196,7 +194,6 @@ public final class ConnectionPool<
                 let stateMachineAction = self._stateMachine.leaseConnection(request)
                 let poolAction = Actions(from: stateMachineAction, lastConnectError: self._lastConnectError)
                 self.runLockedConnectionAction(poolAction.locked.connection)
-                self.runLockedRequestAction(poolAction.locked.request)
                 unlocked.append(poolAction.unlocked)
             }
 
@@ -292,27 +289,16 @@ public final class ConnectionPool<
                 case failRequests(RequestCollection<Request>, PoolError)
                 case none
             }
-
-            @usableFromInline
-            enum Locked {
-                case scheduleRequestTimeout(for: Request, on: EventLoop)
-                case cancelRequestTimeout(Request.ID)
-                case cancelRequestTimeouts(LazyFilterSequence<RequestCollection<Request>>)
-                case none
-            }
         }
 
         @usableFromInline
         struct Locked {
             @usableFromInline
             var connection: ConnectionAction.Locked
-            @usableFromInline
-            var request: RequestAction.Locked
 
             @inlinable
-            init(connection: ConnectionAction.Locked, request: RequestAction.Locked) {
+            init(connection: ConnectionAction.Locked) {
                 self.connection = connection
-                self.request = request
             }
         }
 
@@ -337,26 +323,17 @@ public final class ConnectionPool<
 
         @inlinable
         init(from stateMachineAction: StateMachine.Action, lastConnectError: Error?) {
-            self.locked = Locked(connection: .none, request: .none)
+            self.locked = Locked(connection: .none)
             self.unlocked = Unlocked(connection: .none, request: .none)
 
             switch stateMachineAction.request {
-            case .leaseConnection(let requests, let connection, cancelTimeout: let cancelTimeout):
+            case .leaseConnection(let requests, let connection):
 
-                if cancelTimeout {
-                    self.locked.request = .cancelRequestTimeouts(requests.lazy.filter { $0.deadline != nil })
-                }
                 self.unlocked.request = .leaseConnection(requests, connection)
-            case .failRequest(let request, let error, cancelTimeout: let cancelTimeout):
-                if cancelTimeout {
-                    self.locked.request = .cancelRequestTimeout(request.id)
-                }
+            case .failRequest(let request, let error):
                 self.unlocked.request = .failRequest(request, error)
-            case .failRequestsAndCancelTimeouts(let requests, let error):
-                self.locked.request = .cancelRequestTimeouts(requests.lazy.filter { $0.deadline != nil })
+            case .failRequests(let requests, let error):
                 self.unlocked.request = .failRequests(requests, error)
-            case .scheduleRequestTimeout(for: let request, on: let eventLoop):
-                self.locked.request = .scheduleRequestTimeout(for: request, on: eventLoop)
             case .none:
                 break
             }
@@ -408,7 +385,6 @@ public final class ConnectionPool<
             let stateMachineAction = closure(&self._stateMachine)
             let poolAction = Actions(from: stateMachineAction, lastConnectError: self._lastConnectError)
             self.runLockedConnectionAction(poolAction.locked.connection)
-            self.runLockedRequestAction(poolAction.locked.request)
             return poolAction.unlocked
         }
         self.runUnlockedActions(unlockedActions)
@@ -449,23 +425,6 @@ public final class ConnectionPool<
             idleTimers.forEach { self.cancelIdleTimeoutTimerForConnection($0) }
             keepAliveTimers.forEach { self.cancelKeepAliveTimerForConnection($0) }
             backoffTimers.forEach { self.cancelConnectionStartBackoffTimer($0) }
-
-        case .none:
-            break
-        }
-    }
-
-    @inlinable
-    /*private*/ func runLockedRequestAction(_ action: Actions.RequestAction.Locked) {
-        switch action {
-        case .scheduleRequestTimeout(for: let request, on: let eventLoop):
-            self.scheduleRequestTimeout(request, on: eventLoop)
-
-        case .cancelRequestTimeout(let requestID):
-            self.cancelRequestTimeout(requestID)
-
-        case .cancelRequestTimeouts(let requests):
-            requests.forEach { self.cancelRequestTimeout($0.id) }
 
         case .none:
             break
@@ -560,34 +519,6 @@ public final class ConnectionPool<
             self._lastConnectError = error
             return stateMachine.connectionEstablishFailed(error, for: request)
         }
-    }
-
-    @inlinable
-    /*private*/ func scheduleRequestTimeout(_ request: Request, on eventLoop: EventLoop) {
-        let requestID = request.id
-        let scheduled = eventLoop.scheduleTask(deadline: request.deadline!) {
-            // there might be a race between a the timeout timer and the pool scheduling the
-            // request on another thread.
-            self.modifyStateAndRunActions { stateMachine in
-                if self._requestTimer.removeValue(forKey: requestID) != nil {
-                    // The timer still exists. State Machines assumes it is alive. Inform state
-                    // machine.
-                    return stateMachine.timeoutRequest(id: requestID)
-                }
-                return .none()
-            }
-        }
-
-        assert(self._requestTimer[requestID] == nil)
-        self._requestTimer[requestID] = scheduled
-    }
-
-    @inlinable
-    /*private*/ func cancelRequestTimeout(_ id: Request.ID) {
-        guard let cancelTimer = self._requestTimer.removeValue(forKey: id) else {
-            preconditionFailure("Expected to have a timer for request \(id) at this point.")
-        }
-        cancelTimer.cancel()
     }
 
     @inlinable
