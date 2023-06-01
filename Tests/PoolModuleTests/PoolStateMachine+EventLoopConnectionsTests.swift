@@ -327,17 +327,14 @@ final class TestRequest<Connection: PooledConnection>: ConnectionRequestProtocol
 
     var id: ID { ID(self) }
 
-    let preferredEventLoop: EventLoop?
-
     let deadline: NIODeadline
 
-    init(deadline: NIODeadline, preferredEventLoop: EventLoop?, connectionType: Connection.Type) {
+    init(deadline: NIODeadline, connectionType: Connection.Type) {
         self.deadline = deadline
-        self.preferredEventLoop = preferredEventLoop
     }
 
     static func ==(lhs: TestRequest, rhs: TestRequest) -> Bool {
-        lhs.id == rhs.id && lhs.preferredEventLoop === rhs.preferredEventLoop && lhs.deadline == rhs.deadline
+        lhs.id == rhs.id && lhs.deadline == rhs.deadline
     }
 
     func complete(with: Result<Connection, PoolError>) {
@@ -346,10 +343,9 @@ final class TestRequest<Connection: PooledConnection>: ConnectionRequestProtocol
 }
 
 extension TestRequest where Connection == TestConnection {
-    convenience init(deadline: NIODeadline, preferredEventLoop: EventLoop?) {
+    convenience init(deadline: NIODeadline) {
         self.init(
             deadline: deadline,
-            preferredEventLoop: preferredEventLoop,
             connectionType: TestConnection.self
         )
     }

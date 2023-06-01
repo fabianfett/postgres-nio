@@ -358,10 +358,7 @@ struct PoolStateMachine<
         self.eventLoopGroup = eventLoopGroup
         self.connections = [:]
         self.connections.reserveCapacity(self.eventLoops.count)
-        self.requestQueue = RequestQueue(
-            eventLoopGroup: eventLoopGroup,
-            maxConsecutivePicksFromEventLoopQueue: configuration.maxConsecutivePicksFromEventLoopQueue
-        )
+        self.requestQueue = RequestQueue()
 
         let minimumConnectionsPerEL = configuration.minimumConnectionCount / self.eventLoops.count
         var additionalMinimumConnections = configuration.minimumConnectionCount % self.eventLoops.count
@@ -460,16 +457,6 @@ struct PoolStateMachine<
             return .none()
         }
 
-        // check if the preferredEL has an idle connection
-        if let preferredEL = request.preferredEventLoop {
-            if let (connection, info) = self.connections[preferredEL.id]!.leaseConnection() {
-                return .init(
-                    request: .leaseConnection(.init(request), connection),
-                    connection: connectionActionForLease(connection.id, info: info)
-                )
-            }
-        }
-
         var soonAvailable: UInt16 = 0
 
         // check if any other EL has an idle connection
@@ -503,33 +490,11 @@ struct PoolStateMachine<
             )
         }
 
-        // create new demand connection
-
-        if let preferredEL = request.preferredEventLoop {
-            if let request = self.connections[preferredEL.id]!.createNewDemandConnectionIfPossible() {
-                return .init(
-                    request: requestAction,
-                    connection: .createConnection(request)
-                )
-            }
-        }
-
         // check if any other EL has an idle connection
         for index in RandomStartIndexIterator(self.connections) {
             var (key, connections) = self.connections[index]
             if let request = connections.createNewDemandConnectionIfPossible() {
                 self.connections[key] = connections
-                return .init(
-                    request: requestAction,
-                    connection: .createConnection(request)
-                )
-            }
-        }
-
-        // create new overflow connections
-
-        if let preferredEL = request.preferredEventLoop {
-            if let request = self.connections[preferredEL.id]!.createNewOverflowConnectionIfPossible() {
                 return .init(
                     request: requestAction,
                     connection: .createConnection(request)

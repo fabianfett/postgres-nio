@@ -6,7 +6,7 @@ import Logging
 
 final class PostgresClientTests: XCTestCase {
 
-    func testGetConnection() {
+    func testGetConnection() async throws {
         var mlogger = Logger(label: "test")
         mlogger.logLevel = .debug
         let logger = mlogger
@@ -20,38 +20,15 @@ final class PostgresClientTests: XCTestCase {
         guard let client = maybeClient else { return XCTFail("Expected to have a client here") }
 //        defer { XCTAssertNoThrow(try client.syncShutdown()) }
 
-        let onCounter = ManagedAtomic(0)
-        let offCounter = ManagedAtomic(0)
-
-        var futures = [EventLoopFuture<PostgresQueryResult>]()
-        futures.reserveCapacity(1000)
-
-        XCTAssertNoThrow(try eventLoopGroup.next().scheduleTask(in: .seconds(1), {}).futureResult.wait())
-
         for _ in 0..<10000 {
-            let eventLoop = eventLoopGroup.next()
-            let future = client.withConnection(logger: logger, preferredEventLoop: eventLoop) {
-                connection -> EventLoopFuture<PostgresQueryResult> in
-
-                if eventLoop === connection.eventLoop {
-                    onCounter.wrappingIncrement(ordering: .relaxed)
-                } else {
-                    offCounter.wrappingIncrement(ordering: .relaxed)
+            await withThrowingTaskGroup(of: Void.self) { taskGroup in
+                taskGroup.addTask {
+                    try await client.withConnection(logger: logger) { connection in
+                        _ = try await connection.query("SELECT 1", logger: logger)
+                    }
                 }
-
-                return connection.query("SELECT 1", logger: logger)
             }
-
-            futures.append(future)
         }
-
-        let future = EventLoopFuture.andAllSucceed(futures, on: eventLoopGroup.next())
-        XCTAssertNoThrow(try future.wait())
-
-        logger.info("Result", metadata: [
-            "on-el": "\(onCounter.load(ordering: .relaxed))",
-            "off-el": "\(offCounter.load(ordering: .relaxed))",
-        ])
     }
 }
 

@@ -10,8 +10,6 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
 
     public var id: ID
 
-    public var preferredEventLoop: NIOCore.EventLoop?
-
     public var deadline: NIOCore.NIODeadline?
 
     private var reportingMechanism: AsyncReportingMechanism
@@ -19,24 +17,20 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
     init(
         id: Int,
         deadline: NIOCore.NIODeadline,
-        continuation: CheckedContinuation<Connection, Error>,
-        preferredEventLoop: EventLoop?
+        continuation: CheckedContinuation<Connection, Error>
     ) {
         self.id = id
         self.deadline = deadline
-        self.preferredEventLoop = preferredEventLoop
         self.reportingMechanism = .continuation(continuation)
     }
 
     init(
         id: Int,
         deadline: NIOCore.NIODeadline,
-        promise: EventLoopPromise<Connection>,
-        preferredEventLoop: EventLoop?
+        promise: EventLoopPromise<Connection>
     ) {
         self.id = id
         self.deadline = deadline
-        self.preferredEventLoop = preferredEventLoop
         self.reportingMechanism = .promise(promise)
     }
 
@@ -102,8 +96,7 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
                 let request = Request(
                     id: requestID,
                     deadline: .now() + .seconds(10),
-                    continuation: continuation,
-                    preferredEventLoop: nil
+                    continuation: continuation
                 )
 
                 self.leaseConnection(request)
@@ -117,34 +110,19 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
         return connection
     }
 
-    public func leaseConnection(preferredEventLoop: EventLoop) -> EventLoopFuture<Connection> {
+    public func leaseConnection() -> EventLoopFuture<Connection> {
         let requestID = requestIDGenerator.next()
 
-        let promise = preferredEventLoop.makePromise(of: Connection.self)
+        let promise = self.eventLoopGroup.any().makePromise(of: Connection.self)
 
         let request = Request(
             id: requestID,
             deadline: .now() + .seconds(10),
-            promise: promise,
-            preferredEventLoop: preferredEventLoop
+            promise: promise
         )
 
         self.leaseConnection(request)
 
         return promise.futureResult
-    }
-
-    public func withConnection<Result>(
-        preferredEventLoop: EventLoop,
-        _ closure: @escaping @Sendable (Connection) -> EventLoopFuture<Result>
-    ) -> EventLoopFuture<Result> {
-
-        return self.leaseConnection(preferredEventLoop: preferredEventLoop).flatMap { connection in
-            let returnedFuture = closure(connection)
-            returnedFuture.whenComplete { _ in
-                self.releaseConnection(connection)
-            }
-            return returnedFuture
-        }
     }
 }

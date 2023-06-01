@@ -156,14 +156,6 @@ public final class PostgresClient: Sendable {
         return try await closure(connection)
     }
 
-    public func withConnection<Result>(
-        logger: Logger,
-        preferredEventLoop: EventLoop,
-        _ closure: @escaping @Sendable (PostgresConnection) -> EventLoopFuture<Result>
-    ) -> EventLoopFuture<Result> {
-        self.pool.withConnection(preferredEventLoop: preferredEventLoop, closure)
-    }
-
     public func shutdown(graceful: Bool) async throws {
         try await self.pool.shutdown()
     }

@@ -83,8 +83,6 @@ public protocol ConnectionRequestProtocol {
 
     var id: ID { get }
 
-    var preferredEventLoop: EventLoop? { get }
-
     func complete(with: Result<Connection, PoolError>)
 }
 

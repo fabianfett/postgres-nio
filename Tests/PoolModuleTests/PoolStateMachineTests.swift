@@ -20,7 +20,7 @@ final class PoolStateMachineTests: XCTestCase {
             eventLoopGroup: self.eventLoop
         )
 
-        let leaseRequest = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
+        let leaseRequest = TestRequest(deadline: .now() + .seconds(2))
         let leaseAction = stateMachine.leaseConnection(leaseRequest)
         guard case .leaseConnection(let requests, let leasedConnection) = leaseAction.request else {
             return XCTFail("Unexpected request action")
@@ -43,7 +43,7 @@ final class PoolStateMachineTests: XCTestCase {
         )
 
         for _ in 0..<2 {
-            let leaseRequest = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
+            let leaseRequest = TestRequest(deadline: .now() + .seconds(2))
             let leaseAction = stateMachine.leaseConnection(leaseRequest)
             guard case .leaseConnection(let requests, let leasedConnection) = leaseAction.request else {
                 return XCTFail("Unexpected request action")
@@ -55,7 +55,7 @@ final class PoolStateMachineTests: XCTestCase {
         }
 
         let connRequests = (0..<4).compactMap { (_) -> (TestPoolStateMachine.ConnectionRequest, TestRequest<TestConnection>)? in
-            let leaseRequest = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
+            let leaseRequest = TestRequest(deadline: .now() + .seconds(2))
             let leaseAction = stateMachine.leaseConnection(leaseRequest)
             XCTAssertEqual(leaseAction.request, .none)
             guard case .createConnection(let connRequest) = leaseAction.connection else {
@@ -66,7 +66,7 @@ final class PoolStateMachineTests: XCTestCase {
         }
 
         //
-        let leaseRequest4 = TestRequest(deadline: .now() + .seconds(2), preferredEventLoop: nil)
+        let leaseRequest4 = TestRequest(deadline: .now() + .seconds(2))
         let leaseAction4 = stateMachine.leaseConnection(leaseRequest4)
         XCTAssertEqual(leaseAction4.request, .none)
         XCTAssertEqual(leaseAction4.connection, .none)

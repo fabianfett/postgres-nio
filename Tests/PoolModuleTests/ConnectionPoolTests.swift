@@ -27,7 +27,7 @@ final class ConnectionPoolTests: XCTestCase {
         // the same connection is reused 1000 times
 
         for _ in 0..<1000 {
-            let connectionFuture = pool.leaseConnection(preferredEventLoop: eventLoop)
+            let connectionFuture = pool.leaseConnection()
             var leasedConnection: MockConnection?
             XCTAssertNil(factory.succeedNextAttempt())
             XCTAssertNoThrow(leasedConnection = try connectionFuture.wait())
