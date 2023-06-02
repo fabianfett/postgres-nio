@@ -6,7 +6,7 @@ public protocol ConnectionKeepAliveBehavior: Sendable {
 
     var keepAliveFrequency: TimeAmount? { get }
 
-    func runKeepAlive(for connection: Connection) -> EventLoopFuture<Void>
+    func runKeepAlive(for connection: Connection) async throws
 }
 
 public protocol ConnectionFactory {
@@ -18,10 +18,9 @@ public protocol ConnectionFactory {
     associatedtype MetricsDelegate: ConnectionPoolMetricsDelegate where MetricsDelegate.ConnectionID == ConnectionID
 
     func makeConnection(
-        on eventLoop: EventLoop,
         id: ConnectionID,
         for pool: ConnectionPool<Self, Connection, ConnectionID, ConnectionIDGenerator, Request, Request.ID, KeepAliveBehavior, MetricsDelegate>
-    ) -> EventLoopFuture<ConnectionAndMetadata<Connection>>
+    ) async throws -> ConnectionAndMetadata<Connection>
 }
 
 public struct ConnectionAndMetadata<Connection: PooledConnection> {
@@ -139,6 +138,9 @@ public final class ConnectionPool<
 
     private let requestIDGenerator = PoolModule.ConnectionIDGenerator()
 
+    private let eventStream: AsyncStream<NewPoolActions>
+    private let eventContinuation: AsyncStream<NewPoolActions>.Continuation
+
     public init(
         configuration: ConnectionPoolConfiguration,
         idGenerator: ConnectionIDGenerator,
@@ -159,7 +161,12 @@ public final class ConnectionPool<
             eventLoopGroup: eventLoopGroup
         )
 
+        let (stream, continuation) = AsyncStream.makeStream(of: NewPoolActions.self)
+        self.eventStream = stream
+        self.eventContinuation = continuation
+
         let connectionRequests = self._stateMachine.refillConnections()
+        
 
         for request in connectionRequests {
             self.makeConnection(for: request)
@@ -228,6 +235,45 @@ public final class ConnectionPool<
 
     }
 
+    public func run() async {
+        await withTaskGroup(of: Void.self) { taskGroup in
+            for await event in self.eventStream {
+                taskGroup.addTask {
+                    switch event {
+                    case .makeConnection(let request):
+                        do {
+                            let connection = try await self.factory.makeConnection(id: request.connectionID, for: self)
+                            self.stateLock.withLock {
+                                self._stateMachine.connectionEstablished(connection.connection, maxStreams: connection.maximalStreamsOnConnection)
+                            }
+                        } catch {
+                            self.stateLock.withLock {
+                                self._stateMachine.connectionEstablishFailed(error, for: request)
+                            }
+                        }
+
+                    case .runKeepAlive(let connection):
+                        do {
+                            try await self.keepAliveBehavior.runKeepAlive(for: connection)
+                            self.stateLock.withLock {
+                                self._stateMachine.connectionKeepAliveDone(connection)
+                            }
+                        } catch {
+                            self.stateLock.withLock {
+                                // is this actually the best and correct?
+                                self._stateMachine.connectionClosed(connection)
+                            }
+                        }
+
+                    case .scheduleTimer(let timer):
+                        self.clock.sleep(.seconds(30))
+                    }
+                }
+            }
+
+        }
+    }
+
     public func shutdown() async throws {
         let promise = self.eventLoopGroup.any().makePromise(of: Void.self)
         self.shutdown(promise: promise)
@@ -242,6 +288,16 @@ public final class ConnectionPool<
     }
 
     // MARK: - Private Methods -
+
+    // MARK: Events
+
+    enum NewPoolActions {
+        case makeConnection(StateMachine.ConnectionRequest)
+        case closeConnection(Connection)
+        case runKeepAlive(Connection)
+
+        case scheduleTimer(Connection)
+    }
 
     // MARK: Actions
 

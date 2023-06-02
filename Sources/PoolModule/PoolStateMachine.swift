@@ -23,9 +23,6 @@ struct PoolConfiguration {
     var maximumConnectionHardLimit: Int = 10
 
     @usableFromInline
-    var maxConsecutivePicksFromEventLoopQueue: UInt8 = 16
-
-    @usableFromInline
     var keepAlive: Bool = false
 }
 
