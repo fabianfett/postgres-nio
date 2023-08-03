@@ -1,6 +1,6 @@
 import DequeModule
-import NIOCore
 
+@available(macOS 14.0, *)
 extension PoolStateMachine {
 
     @usableFromInline
@@ -35,7 +35,7 @@ extension PoolStateMachine {
         }
 
         @inlinable
-        mutating func pop(for eventLoopID: EventLoopID) -> Request? {
+        mutating func pop() -> Request? {
             while let requestID = self.generalPurposeQueue.popFirst() {
                 if let requestIndex = self.requests.index(forKey: requestID) {
                     return self.requests.remove(at: requestIndex).value

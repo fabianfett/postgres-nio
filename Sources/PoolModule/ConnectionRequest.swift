@@ -1,5 +1,6 @@
 import NIOCore
 
+@available(macOS 14, *)
 public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequestProtocol {
     private enum AsyncReportingMechanism {
         case continuation(CheckedContinuation<Connection, Error>)
@@ -64,6 +65,7 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
 
 fileprivate let requestIDGenerator = PoolModule.ConnectionIDGenerator()
 
+@available(macOS 14, *)
 extension ConnectionPool where Request == ConnectionRequest<Connection> {
     public convenience init(
         configuration: ConnectionPoolConfiguration,
@@ -71,7 +73,7 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
         factory: Factory,
         keepAliveBehavior: KeepAliveBehavior,
         metricsDelegate: MetricsDelegate,
-        eventLoopGroup: EventLoopGroup
+        clock: Clock
     ) {
         self.init(
             configuration: configuration,
@@ -80,7 +82,7 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
             requestType: ConnectionRequest<Connection>.self,
             keepAliveBehavior: keepAliveBehavior,
             metricsDelegate: metricsDelegate,
-            eventLoopGroup: eventLoopGroup
+            clock: clock
         )
     }
 
@@ -108,21 +110,5 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
         self.metricsDelegate.connectionLeased(id: connection.id)
 
         return connection
-    }
-
-    public func leaseConnection() -> EventLoopFuture<Connection> {
-        let requestID = requestIDGenerator.next()
-
-        let promise = self.eventLoopGroup.any().makePromise(of: Connection.self)
-
-        let request = Request(
-            id: requestID,
-            deadline: .now() + .seconds(10),
-            promise: promise
-        )
-
-        self.leaseConnection(request)
-
-        return promise.futureResult
     }
 }
