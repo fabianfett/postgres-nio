@@ -2,31 +2,18 @@ import XCTest
 import NIOCore
 import NIOTestUtils
 @testable import PostgresNIO
+import PostgresTestUtils
 
 class ParameterDescriptionTests: XCTestCase {
     
     func testDecode() {
-        let expected: [PostgresBackendMessage] = [
-            .parameterDescription(.init(dataTypes: [.bool, .varchar, .uuid, .json, .jsonbArray])),
-        ]
+        let expected: [PostgresDataType] = [.bool, .varchar, .uuid, .json, .jsonbArray]
         
-        var buffer = ByteBuffer()
-        expected.forEach { message in
-            guard case .parameterDescription(let description) = message else {
-                return XCTFail("Expected only to get parameter descriptions here!")
-            }
-            
-            buffer.writeBackendMessage(id: .parameterDescription) { buffer in
-                buffer.writeInteger(Int16(description.dataTypes.count))
-                
-                description.dataTypes.forEach { dataType in
-                    buffer.writeInteger(dataType.rawValue)
-                }
-            }
-        }
+        var encoder = PostgresBackendMessageEncoder()
+        encoder.encodeParameterDescription(expected)
         
         XCTAssertNoThrow(try ByteToMessageDecoderVerifier.verifyDecoder(
-            inputOutputPairs: [(buffer, expected)],
+            inputOutputPairs: [(encoder.flushBuffer(), [PostgresNIO.PostgresBackendMessage.parameterDescription(.init(dataTypes: expected))])],
             decoderFactory: { PostgresBackendMessageDecoder(hasAlreadyReceivedBytes: true) }))
     }
     

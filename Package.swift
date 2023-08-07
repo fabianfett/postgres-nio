@@ -38,10 +38,22 @@ let package = Package(
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
             ]
         ),
+        // helper library to allow efficient testing of PostgresNIO in unit and performance tests.
+        // this is an internal library and users must not depend on it!
+        .target(
+            name: "PostgresTestUtils",
+            dependencies: [
+                .target(name: "PostgresNIO"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+            ]
+        ),
         .testTarget(
             name: "PostgresNIOTests",
             dependencies: [
                 .target(name: "PostgresNIO"),
+                .target(name: "PostgresTestUtils"),
+                .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),
                 .product(name: "NIOTestUtils", package: "swift-nio"),
             ]

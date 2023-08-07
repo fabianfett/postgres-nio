@@ -1,6 +1,7 @@
 import XCTest
 import NIOCore
 @testable import PostgresNIO
+import PostgresTestUtils
 
 class StartupTests: XCTestCase {
     

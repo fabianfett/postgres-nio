@@ -17,4 +17,8 @@ extension ByteBuffer {
         let length = self.writerIndex - lengthIndex
         self.setInteger(Int32(length), at: lengthIndex)
     }
+
+    mutating func psqlWriteBackendMessageID(_ messageID: PostgresBackendMessage.ID) {
+        self.writeInteger(messageID.rawValue)
+    }
 }

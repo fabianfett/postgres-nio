@@ -20,7 +20,7 @@ class SASLInitialResponseTests: XCTestCase {
         // + 8 initialData
         
         XCTAssertEqual(byteBuffer.readableBytes, length)
-        XCTAssertEqual(byteBuffer.readInteger(as: UInt8.self), PostgresFrontendMessage.ID.saslInitialResponse.rawValue)
+        XCTAssertEqual(byteBuffer.readInteger(as: UInt8.self), PostgresFrontendMessageID.password.rawValue)
         XCTAssertEqual(byteBuffer.readInteger(as: Int32.self), Int32(length - 1))
         XCTAssertEqual(byteBuffer.readNullTerminatedString(), saslMechanism)
         XCTAssertEqual(byteBuffer.readInteger(as: Int32.self), Int32(initialData.count))
@@ -44,7 +44,7 @@ class SASLInitialResponseTests: XCTestCase {
         // + 0 initialData
         
         XCTAssertEqual(byteBuffer.readableBytes, length)
-        XCTAssertEqual(byteBuffer.readInteger(as: UInt8.self), PostgresFrontendMessage.ID.saslInitialResponse.rawValue)
+        XCTAssertEqual(byteBuffer.readInteger(as: UInt8.self), PostgresFrontendMessageID.password.rawValue)
         XCTAssertEqual(byteBuffer.readInteger(as: Int32.self), Int32(length - 1))
         XCTAssertEqual(byteBuffer.readNullTerminatedString(), saslMechanism)
         XCTAssertEqual(byteBuffer.readInteger(as: Int32.self), Int32(-1))

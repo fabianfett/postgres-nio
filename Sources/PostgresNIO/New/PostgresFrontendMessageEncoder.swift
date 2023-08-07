@@ -1,6 +1,18 @@
 import NIOCore
 
 struct PostgresFrontendMessageEncoder {
+
+    /// The SSL request code. The value is chosen to contain 1234 in the most significant 16 bits,
+    /// and 5679 in the least significant 16 bits.
+    static let sslRequestCode: Int32 = 80877103
+
+    /// The cancel request code. The value is chosen to contain 1234 in the most significant 16 bits,
+    /// and 5678 in the least significant 16 bits. (To avoid confusion, this code must not be the same
+    /// as any protocol version number.)
+    static let cancelRequestCode: Int32 = 80877102
+
+    static let startupVersionThree: Int32 = 0x00_03_00_00
+
     private enum State {
         case flushed
         case writable
@@ -16,7 +28,7 @@ struct PostgresFrontendMessageEncoder {
     mutating func startup(user: String, database: String?) {
         self.clearIfNeeded()
         self.encodeLengthPrefixed { buffer in
-            buffer.writeInteger(PostgresFrontendMessage.Startup.versionThree)
+            buffer.writeInteger(Self.startupVersionThree)
             buffer.writeNullTerminatedString("user")
             buffer.writeNullTerminatedString(user)
 
@@ -65,45 +77,45 @@ struct PostgresFrontendMessageEncoder {
 
     mutating func cancel(processID: Int32, secretKey: Int32) {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(UInt32(16), PostgresFrontendMessage.Cancel.requestCode, processID, secretKey)
+        self.buffer.writeMultipleIntegers(UInt32(16), Self.cancelRequestCode, processID, secretKey)
     }
 
     mutating func closePreparedStatement(_ preparedStatement: String) {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.close.rawValue, UInt32(6 + preparedStatement.utf8.count), UInt8(ascii: "S"))
+        self.buffer.psqlWriteMultipleIntegers(id: .close, length: UInt32(2 + preparedStatement.utf8.count), UInt8(ascii: "S"))
         self.buffer.writeNullTerminatedString(preparedStatement)
     }
 
     mutating func closePortal(_ portal: String) {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.close.rawValue, UInt32(6 + portal.utf8.count), UInt8(ascii: "P"))
+        self.buffer.psqlWriteMultipleIntegers(id: .close, length: UInt32(2 + portal.utf8.count), UInt8(ascii: "P"))
         self.buffer.writeNullTerminatedString(portal)
     }
 
     mutating func describePreparedStatement(_ preparedStatement: String) {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.describe.rawValue, UInt32(6 + preparedStatement.utf8.count), UInt8(ascii: "S"))
+        self.buffer.psqlWriteMultipleIntegers(id: .describe, length: UInt32(2 + preparedStatement.utf8.count), UInt8(ascii: "S"))
         self.buffer.writeNullTerminatedString(preparedStatement)
     }
 
     mutating func describePortal(_ portal: String) {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.describe.rawValue, UInt32(6 + portal.utf8.count), UInt8(ascii: "P"))
+        self.buffer.psqlWriteMultipleIntegers(id: .describe, length: UInt32(2 + portal.utf8.count), UInt8(ascii: "P"))
         self.buffer.writeNullTerminatedString(portal)
     }
 
     mutating func execute(portalName: String, maxNumberOfRows: Int32 = 0) {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.execute.rawValue, UInt32(9 + portalName.utf8.count))
+        self.buffer.psqlWriteMultipleIntegers(id: .execute, length: UInt32(5 + portalName.utf8.count))
         self.buffer.writeNullTerminatedString(portalName)
         self.buffer.writeInteger(maxNumberOfRows)
     }
 
     mutating func parse<Parameters: Collection>(preparedStatementName: String, query: String, parameters: Parameters) where Parameters.Element == PostgresDataType {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(
-            PostgresFrontendMessage.ID.parse.rawValue,
-            UInt32(4 + preparedStatementName.utf8.count + 1 + query.utf8.count + 1 + 2 + MemoryLayout<PostgresDataType>.size * parameters.count)
+        self.buffer.psqlWriteMultipleIntegers(
+            id: .parse,
+            length: UInt32(preparedStatementName.utf8.count + 1 + query.utf8.count + 1 + 2 + MemoryLayout<PostgresDataType>.size * parameters.count)
         )
         self.buffer.writeNullTerminatedString(preparedStatementName)
         self.buffer.writeNullTerminatedString(query)
@@ -116,28 +128,25 @@ struct PostgresFrontendMessageEncoder {
 
     mutating func password<Bytes: Collection>(_ bytes: Bytes) where Bytes.Element == UInt8 {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.password.rawValue, UInt32(5 + bytes.count))
+        self.buffer.psqlWriteMultipleIntegers(id: .password, length: UInt32(bytes.count) + 1)
         self.buffer.writeBytes(bytes)
         self.buffer.writeInteger(UInt8(0))
     }
 
     mutating func flush() {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.flush.rawValue, UInt32(4))
+        self.buffer.psqlWriteMultipleIntegers(id: .flush, length: 0)
     }
 
     mutating func saslResponse<Bytes: Collection>(_ bytes: Bytes) where Bytes.Element == UInt8 {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.saslResponse.rawValue, UInt32(4 + bytes.count))
+        self.buffer.psqlWriteMultipleIntegers(id: .password, length: UInt32(bytes.count))
         self.buffer.writeBytes(bytes)
     }
 
     mutating func saslInitialResponse<Bytes: Collection>(mechanism: String, bytes: Bytes) where Bytes.Element == UInt8 {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(
-            PostgresFrontendMessage.ID.saslInitialResponse.rawValue,
-            UInt32(4 + mechanism.utf8.count + 1 + 4 + bytes.count)
-        )
+        self.buffer.psqlWriteMultipleIntegers(id: .password, length: UInt32(mechanism.utf8.count + 1 + 4 + bytes.count))
         self.buffer.writeNullTerminatedString(mechanism)
         if bytes.count > 0 {
             self.buffer.writeInteger(Int32(bytes.count))
@@ -149,17 +158,17 @@ struct PostgresFrontendMessageEncoder {
 
     mutating func ssl() {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(UInt32(8), PostgresFrontendMessage.SSLRequest.requestCode)
+        self.buffer.writeMultipleIntegers(UInt32(8), Self.sslRequestCode)
     }
 
     mutating func sync() {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.sync.rawValue, UInt32(4))
+        self.buffer.psqlWriteMultipleIntegers(id: .sync, length: 0)
     }
 
     mutating func terminate() {
         self.clearIfNeeded()
-        self.buffer.writeMultipleIntegers(PostgresFrontendMessage.ID.terminate.rawValue, UInt32(4))
+        self.buffer.psqlWriteMultipleIntegers(id: .terminate, length: 0)
     }
 
     mutating func flushBuffer() -> ByteBuffer {
@@ -185,5 +194,34 @@ struct PostgresFrontendMessageEncoder {
         let length = UInt32(self.buffer.writerIndex - startIndex)
         self.buffer.setInteger(length, at: startIndex)
     }
+}
 
+enum PostgresFrontendMessageID: UInt8, Hashable, Sendable {
+    case bind = 66 // B
+    case close = 67 // C
+    case describe = 68 // D
+    case execute = 69 // E
+    case flush = 72 // H
+    case parse = 80 // P
+    case password = 112 // p - also both sasl values
+    case sync = 83 // S
+    case terminate = 88 // X
+}
+
+extension ByteBuffer {
+    mutating fileprivate func psqlWriteFrontendMessageID(_ messageID: PostgresFrontendMessageID) {
+        self.writeInteger(messageID.rawValue)
+    }
+
+    mutating fileprivate func psqlWriteMultipleIntegers(id: PostgresFrontendMessageID, length: UInt32) {
+        self.writeMultipleIntegers(id.rawValue, 4 + length)
+    }
+
+    mutating fileprivate func psqlWriteMultipleIntegers<T1: FixedWidthInteger>(id: PostgresFrontendMessageID, length: UInt32, _ t1: T1) {
+        self.writeMultipleIntegers(id.rawValue, 4 + length, t1)
+    }
+
+    mutating fileprivate func psqlWriteMultipleIntegers<T1: FixedWidthInteger, T2: FixedWidthInteger>(id: PostgresFrontendMessageID, length: UInt32, _ t1: T1, _ t2: T2) {
+        self.writeMultipleIntegers(id.rawValue, 4 + length, t1, t2)
+    }
 }

@@ -1,16 +1,16 @@
-@testable import PostgresNIO
 import NIOCore
+import PostgresNIO
 
-struct PSQLFrontendMessageDecoder: NIOSingleStepByteToMessageDecoder {
-    typealias InboundOut = PostgresFrontendMessage
-    
+public struct PostgresFrontendMessageDecoder: NIOSingleStepByteToMessageDecoder {
+    public typealias InboundOut = PostgresFrontendMessage
+
     private(set) var isInStartup: Bool
     
-    init() {
+    public init() {
         self.isInStartup = true
     }
     
-    mutating func decode(buffer: inout ByteBuffer) throws -> PostgresFrontendMessage? {
+    mutating public func decode(buffer: inout ByteBuffer) throws -> PostgresFrontendMessage? {
         // make sure we have at least one byte to read
         guard buffer.readableBytes > 0 else {
             return nil
@@ -28,7 +28,7 @@ struct PSQLFrontendMessageDecoder: NIOSingleStepByteToMessageDecoder {
             let finalIndex = buffer.readerIndex
             
             guard let code = messageSlice.readInteger(as: UInt32.self) else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: UInt32.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable, buffer: buffer)
             }
             
             switch code {
@@ -77,7 +77,7 @@ struct PSQLFrontendMessageDecoder: NIOSingleStepByteToMessageDecoder {
                 return .startup(startup)
                 
             default:
-                throw PostgresMessageDecodingError.unknownStartupCodeReceived(code: code, messageBytes: messageSlice)
+                throw PostgresFrontendMessageDecodingError(.unknownStartupCode(code), buffer: buffer)
             }
         }
         
@@ -97,7 +97,7 @@ struct PSQLFrontendMessageDecoder: NIOSingleStepByteToMessageDecoder {
         
         // 2. make sure we have a known message identifier
         guard let messageID = PostgresFrontendMessage.ID(rawValue: idByte) else {
-            throw PostgresMessageDecodingError.unknownMessageIDReceived(messageID: idByte, messageBytes: completeMessageBuffer)
+            throw PostgresFrontendMessageDecodingError(.unknownMessageID(idByte))
         }
         
         // 3. decode the message
@@ -108,14 +108,15 @@ struct PSQLFrontendMessageDecoder: NIOSingleStepByteToMessageDecoder {
             slice.moveReaderIndex(forwardBy: 5)
             
             return try PostgresFrontendMessage.decode(from: &slice, for: messageID)
-        } catch let error as PSQLPartialDecodingError {
-            throw PostgresMessageDecodingError.withPartialError(error, messageID: messageID.rawValue, messageBytes: completeMessageBuffer)
+        } catch var error as PostgresFrontendMessageDecodingError {
+            error.buffer = buffer
+            throw error
         } catch {
             preconditionFailure("Expected to only see `PartialDecodingError`s here.")
         }
     }
     
-    mutating func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> PostgresFrontendMessage? {
+    mutating public func decodeLast(buffer: inout ByteBuffer, seenEOF: Bool) throws -> PostgresFrontendMessage? {
         try self.decode(buffer: &buffer)
     }
 }
@@ -126,30 +127,38 @@ extension PostgresFrontendMessage {
         switch messageID {
         case .bind:
             guard let portalName = buffer.readNullTerminatedString() else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: String.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
             guard let preparedStatementName = buffer.readNullTerminatedString() else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: String.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
             guard let parameterFormatCount = buffer.readInteger(as: UInt16.self) else {
-                preconditionFailure("TODO: Unimplemented")
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
 
-            let parameterFormats = (0..<parameterFormatCount).map({ _ in PostgresFormat(rawValue: buffer.readInteger(as: Int16.self)!)! })
+            let parameterFormats = try (0..<parameterFormatCount).map { _ in
+                guard let code = buffer.readInteger(as: Int16.self) else {
+                    throw PostgresFrontendMessageDecodingError(.missingBytes)
+                }
+                guard let format = PostgresFormat(rawValue: code) else {
+                    throw PostgresFrontendMessageDecodingError(.unknownPostgresFormat(code))
+                }
+                return format
+            }
 
             guard let parameterCount = buffer.readInteger(as: UInt16.self) else {
-                preconditionFailure("TODO: Unimplemented")
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
 
-            let parameters = (0..<parameterCount).map { _ -> ByteBuffer? in
+            let parameters = try (0..<parameterCount).map { _ throws -> ByteBuffer? in
                 let length = buffer.readInteger(as: UInt16.self)
                 switch length {
                 case .some(..<0):
                     return nil
-                case .some(0...):
-                    return buffer.readSlice(length: Int(length!))
-                default:
-                    preconditionFailure("TODO: Unimplemented")
+                case .some(let length):
+                    return buffer.readSlice(length: Int(length))
+                case .none:
+                    throw PostgresFrontendMessageDecodingError(.missingBytes)
                 }
             }
 
@@ -157,7 +166,15 @@ extension PostgresFrontendMessage {
                 preconditionFailure("TODO: Unimplemented")
             }
 
-            let resultColumnFormats = (0..<resultColumnFormatCount).map({ _ in PostgresFormat(rawValue: buffer.readInteger(as: Int16.self)!)! })
+            let resultColumnFormats = try (0..<resultColumnFormatCount).map { _ in
+                guard let code = buffer.readInteger(as: Int16.self) else {
+                    throw PostgresFrontendMessageDecodingError(.missingBytes)
+                }
+                guard let format = PostgresFormat(rawValue: code) else {
+                    throw PostgresFrontendMessageDecodingError(.unknownPostgresFormat(code))
+                }
+                return format
+            }
 
             return .bind(
                 Bind(
@@ -170,25 +187,40 @@ extension PostgresFrontendMessage {
             )
 
         case .close:
-            preconditionFailure("TODO: Unimplemented")
+            switch buffer.readInteger(as: UInt8.self) {
+            case UInt8(ascii: "S"):
+                guard let string = buffer.readNullTerminatedString() else { throw PostgresFrontendMessageDecodingError(.missingBytes) }
+                return .describe(.preparedStatement(string))
+            case UInt8(ascii: "P"):
+                guard let string = buffer.readNullTerminatedString() else { throw PostgresFrontendMessageDecodingError(.missingBytes) }
+                return .close(.preparedStatement(string))
+            case .some(let code):
+                throw PostgresFrontendMessageDecodingError(.unknownDescribeCode(code))
+            case .none:
+                throw PostgresFrontendMessageDecodingError(.missingBytes)
+            }
 
         case .describe:
             switch buffer.readInteger(as: UInt8.self) {
             case UInt8(ascii: "S"):
-                return .describe(.preparedStatement(buffer.readNullTerminatedString()!))
+                guard let string = buffer.readNullTerminatedString() else { throw PostgresFrontendMessageDecodingError(.missingBytes) }
+                return .describe(.preparedStatement(string))
             case UInt8(ascii: "P"):
-                return .describe(.portal(buffer.readNullTerminatedString()!))
-            default:
-                preconditionFailure("TODO: Unimplemented")
+                guard let string = buffer.readNullTerminatedString() else { throw PostgresFrontendMessageDecodingError(.missingBytes) }
+                return .describe(.portal(string))
+            case .some(let code):
+                throw PostgresFrontendMessageDecodingError(.unknownDescribeCode(code))
+            case .none:
+                throw PostgresFrontendMessageDecodingError(.missingBytes)
             }
 
         case .execute:
             guard let portalName = buffer.readNullTerminatedString() else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: String.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
 
             guard let maxNumberOfRows = buffer.readInteger(as: Int32.self) else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: Int.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
 
             return .execute(.init(portalName: portalName, maxNumberOfRows: maxNumberOfRows))
@@ -198,26 +230,26 @@ extension PostgresFrontendMessage {
 
         case .parse:
             guard let preparedStatementName = buffer.readNullTerminatedString() else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: String.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
             guard let query = buffer.readNullTerminatedString() else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: String.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
             guard let parameterCount = buffer.readInteger(as: UInt16.self) else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: String.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
             let parameters = (0..<parameterCount).map({ _ in PostgresDataType(buffer.readInteger(as: UInt32.self)!) })
             return .parse(.init(preparedStatementName: preparedStatementName, query: query, parameters: parameters))
 
         case .password:
             guard let password = buffer.readNullTerminatedString() else {
-                throw PSQLPartialDecodingError.fieldNotDecodable(type: String.self)
+                throw PostgresFrontendMessageDecodingError(.fieldNotDecodable)
             }
-            return .password(.init(value: password))
+            return .password(.init(password))
         case .saslInitialResponse:
-            preconditionFailure("TODO: Unimplemented")
+            throw PostgresFrontendMessageDecodingError(.unimplemented)
         case .saslResponse:
-            preconditionFailure("TODO: Unimplemented")
+            throw PostgresFrontendMessageDecodingError(.unimplemented)
         case .sync:
             return .sync
         case .terminate:
@@ -226,21 +258,26 @@ extension PostgresFrontendMessage {
     }
 }
 
-extension PostgresMessageDecodingError {
-    static func unknownStartupCodeReceived(
-        code: UInt32,
-        messageBytes: ByteBuffer,
-        file: String = #fileID,
-        line: Int = #line) -> Self
-    {
-        var byteBuffer = messageBytes
-        let data = byteBuffer.readData(length: byteBuffer.readableBytes)!
-        
-        return PostgresMessageDecodingError(
-            messageID: 0,
-            payload: data.base64EncodedString(),
-            description: "Received a startup code '\(code)'. There is no message associated with this code.",
-            file: file,
-            line: line)
+public struct PostgresFrontendMessageDecodingError: Error {
+    enum Reason {
+        case missingBytes
+        case fieldNotDecodable
+        case unknownMessageID(UInt8)
+        case unknownStartupCode(UInt32)
+        case unknownDescribeCode(UInt8)
+        case unknownPostgresFormat(Int16)
+        case unimplemented
+    }
+
+    var reason: Reason
+    var file: String
+    var line: Int
+    var buffer: ByteBuffer
+
+    init(_ reason: Reason, buffer: ByteBuffer = ByteBuffer(), file: String = #fileID, line: Int = #line) {
+        self.reason = reason
+        self.file = file
+        self.line = line
+        self.buffer = buffer
     }
 }

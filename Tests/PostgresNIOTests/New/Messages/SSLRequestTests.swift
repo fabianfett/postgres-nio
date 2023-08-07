@@ -11,7 +11,7 @@ class SSLRequestTests: XCTestCase {
         
         let byteBufferLength = Int32(byteBuffer.readableBytes)
         XCTAssertEqual(byteBufferLength, byteBuffer.readInteger())
-        XCTAssertEqual(PostgresFrontendMessage.SSLRequest.requestCode, byteBuffer.readInteger())
+        XCTAssertEqual(PostgresFrontendMessageEncoder.sslRequestCode, byteBuffer.readInteger())
 
         XCTAssertEqual(byteBuffer.readableBytes, 0)
     }
