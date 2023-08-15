@@ -6,7 +6,6 @@ import Logging
 import PostgresNIO
 import PostgresTestUtils
 
-#if false
 class PostgresConnectionTests: XCTestCase {
 
     let logger = Logger(label: "PostgresConnectionTests")
@@ -337,4 +336,3 @@ struct UnpreparedRequest {
     var bind: PostgresFrontendMessage.Bind
     var execute: PostgresFrontendMessage.Execute
 }
-#endif

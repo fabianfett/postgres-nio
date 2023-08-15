@@ -85,7 +85,7 @@ class PostgresChannelHandlerTests: XCTestCase {
         XCTAssertEqual(startupMessage.parameters.replication, .false)
     }
 
-    func testEstablishSSLCallbackIsNotCalledIfSSLIsSupportedButAnotherMEssageIsSentAsWell() {
+    func testEstablishSSLCallbackIsNotCalledIfSSLIsSupportedButAnotherMessageIsSentAsWell() {
         var config = self.testConnectionConfiguration()
         XCTAssertNoThrow(config.tls = .require(try NIOSSLContext(configuration: .makeClientConfiguration())))
         var addSSLCallbackIsHit = false
