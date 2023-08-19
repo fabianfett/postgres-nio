@@ -19,7 +19,7 @@ final class ConnectionPoolTests: XCTestCase {
             requestType: ConnectionRequest<MockConnection>.self,
             keepAliveBehavior: MockPingPongBehavior(keepAliveFrequency: nil),
             metricsDelegate: NoOpConnectionPoolMetrics(connectionIDType: MockConnection.ID.self),
-            eventLoopGroup: eventLoop
+            clock: eventLoop
         )
 
         let createdConnection = factory.succeedNextAttempt()

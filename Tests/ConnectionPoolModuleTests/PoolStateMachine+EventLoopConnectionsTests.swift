@@ -1,6 +1,4 @@
 import XCTest
-import NIOCore
-import NIOEmbedded
 @testable import ConnectionPoolModule
 
 typealias TestPoolStateMachine = PoolStateMachine<

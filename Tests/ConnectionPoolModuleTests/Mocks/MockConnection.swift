@@ -1,30 +1,27 @@
 import DequeModule
-import NIOCore
-import NIOConcurrencyHelpers
 import ConnectionPoolModule
+import _ConcurrencyHelpers
 
 // Sendability enforced through the lock
 final class MockConnection: PooledConnection, @unchecked Sendable {
     typealias ID = Int
 
     let id: ID
-    let eventLoop: EventLoop
 
     private enum State {
-        case running([@Sendable () -> ()])
-        case closing([@Sendable () -> ()])
+        case running([@Sendable ((any Error)?) -> ()])
+        case closing([@Sendable ((any Error)?) -> ()])
         case closed
     }
 
     private let lock = NIOLock()
     private var _state = State.running([])
 
-    init(id: Int, eventLoop: EventLoop) {
+    init(id: Int) {
         self.id = id
-        self.eventLoop = eventLoop
     }
 
-    func onClose(_ closure: @escaping @Sendable () -> ()) {
+    func onClose(_ closure: @escaping @Sendable ((any Error)?) -> ()) {
         let enqueued = self.lock.withLock { () -> Bool in
             switch self._state {
             case .closed:
@@ -43,7 +40,7 @@ final class MockConnection: PooledConnection, @unchecked Sendable {
         }
 
         if !enqueued {
-            closure()
+            closure(nil)
         }
     }
 
@@ -60,7 +57,7 @@ final class MockConnection: PooledConnection, @unchecked Sendable {
     }
 
     func closeIfClosing() {
-        let callbacks = self.lock.withLock { () -> [@Sendable () -> ()] in
+        let callbacks = self.lock.withLock { () -> [@Sendable ((any Error)?) -> ()] in
             switch self._state {
             case .running, .closed:
                 return []
@@ -72,13 +69,13 @@ final class MockConnection: PooledConnection, @unchecked Sendable {
         }
 
         for callback in callbacks {
-            callback()
+            callback(nil)
         }
     }
 }
 
 final class MockConnectionFactory: ConnectionFactory {
-    typealias ConnectionIDGenerator = PoolModule.ConnectionIDGenerator
+    typealias ConnectionIDGenerator = ConnectionIDGenerator
 
     typealias Request = ConnectionRequest<MockConnection>
 
@@ -89,13 +86,12 @@ final class MockConnectionFactory: ConnectionFactory {
     typealias ConnectionID = Int
     typealias Connection = MockConnection
 
-    let lock = NIOConcurrencyHelpers.NIOLock()
+    let lock = _ConcurrencyHelpers.NIOLock()
     var _attempts = Deque<(Int, EventLoop, EventLoopPromise<ConnectionAndMetadata<MockConnection>>)>()
 
     func makeConnection(
-        on eventLoop: NIOCore.EventLoop,
         id: Int,
-        for pool: PoolModule.ConnectionPool<MockConnectionFactory, MockConnection, Int, ConnectionIDGenerator, ConnectionRequest<MockConnection>, Int, MockPingPongBehavior, NoOpConnectionPoolMetrics<Int>>) -> NIOCore.EventLoopFuture<PoolModule.ConnectionAndMetadata<MockConnection>> {
+        for pool: ConnectionPool<MockConnectionFactory, MockConnection, Int, ConnectionIDGenerator, ConnectionRequest<MockConnection>, Int, MockPingPongBehavior, NoOpConnectionPoolMetrics<Int>>) async throws -> ConnectionAndMetadata<MockConnection> {
         let promise = eventLoop.makePromise(of: ConnectionAndMetadata<MockConnection>.self)
         self.lock.withLock {
             self._attempts.append((id, eventLoop, promise))
@@ -109,7 +105,7 @@ final class MockConnectionFactory: ConnectionFactory {
             return nil
         }
 
-        let connection = MockConnection(id: id, eventLoop: eventLoop)
+        let connection = MockConnection(id: id)
         defer { promise.succeed(.init(connection: connection, maximalStreamsOnConnection: 1)) }
         return connection
     }
@@ -120,13 +116,13 @@ final class MockConnectionFactory: ConnectionFactory {
 }
 
 final class MockPingPongBehavior: ConnectionKeepAliveBehavior {
-    let keepAliveFrequency: TimeAmount?
+    let keepAliveFrequency: Duration?
 
-    init(keepAliveFrequency: TimeAmount?) {
+    init(keepAliveFrequency: Duration?) {
         self.keepAliveFrequency = keepAliveFrequency
     }
 
-    func runKeepAlive(for connection: MockConnection) -> EventLoopFuture<Void> {
+    func runKeepAlive(for connection: MockConnection) async throws {
         preconditionFailure()
     }
 }

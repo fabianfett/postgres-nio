@@ -1,3 +1,4 @@
+import _ConcurrencyHelpers
 
 @available(macOS 14.0, *)
 public protocol ConnectionKeepAliveBehavior: Sendable {

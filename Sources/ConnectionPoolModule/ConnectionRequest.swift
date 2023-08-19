@@ -86,8 +86,6 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
             self.cancelConnectionRequest(requestID)
         }
 
-        self.metricsDelegate.connectionLeased(id: connection.id)
-
         return connection
     }
 }
