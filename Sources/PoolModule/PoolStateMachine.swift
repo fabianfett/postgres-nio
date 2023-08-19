@@ -227,20 +227,21 @@ struct PoolStateMachine<
     @inlinable
     mutating func leaseConnection(_ request: Request) -> Action {
         func connectionActionForLease(_ connectionID: ConnectionID, info: ConnectionLeasedInfo) -> ConnectionAction {
-            switch (self.configuration.keepAlive, info.use, info.wasIdle) {
-            case (_, .demand, false), (_, .persisted, false):
-                return .none
-            case (true, .demand, true):
-                return .cancelKeepAliveAndIdleTimeoutTimer(connectionID)
-            case (false, .demand, true):
-                return .cancelIdleTimeoutTimer(connectionID)
-            case (true, .persisted, true):
-                return .cancelKeepAliveTimer(connectionID)
-            case (false, .persisted, true):
-                return .none
-            case (_, .overflow, _):
-                preconditionFailure("Overflow connections should never be available on fast turn around")
-            }
+            fatalError()
+//            switch (self.configuration.keepAlive, info.use, info.wasIdle) {
+//            case (_, .demand, false), (_, .persisted, false):
+//                return .none
+//            case (true, .demand, true):
+//                return .cancelKeepAliveAndIdleTimeoutTimer(connectionID)
+//            case (false, .demand, true):
+//                return .cancelIdleTimeoutTimer(connectionID)
+//            case (true, .persisted, true):
+//                return .cancelKeepAliveTimer(connectionID)
+//            case (false, .persisted, true):
+//                return .none
+//            case (_, .overflow, _):
+//                preconditionFailure("Overflow connections should never be available on fast turn around")
+//            }
         }
 
         switch self.poolState {
@@ -328,28 +329,30 @@ struct PoolStateMachine<
 
     @inlinable
     mutating func timerScheduled(_ timer: Timer, cancelContinuation: CheckedContinuation<Void, Never>) -> CheckedContinuation<Void, Never>? {
-        self.connections.
+        fatalError()
     }
 
     @inlinable
     mutating func timerTriggered(_ timer: Timer) -> Action {
-        switch timer.usecase {
-        case .backoff:
-            return self.connectionCreationBackoffDone(timer.connectionID)
-        case .keepAlive:
-            return self.connectionKeepAliveTimerTriggered(timer.connectionID)
-        case .idle:
-            return self.connectionIdleTimerTriggered(timer.connectionID)
-        }
+        fatalError()
+//        switch timer.usecase {
+//        case .backoff:
+//            return self.connectionCreationBackoffDone(timer.connectionID)
+//        case .keepAlive:
+//            return self.connectionKeepAliveTimerTriggered(timer.connectionID)
+//        case .idle:
+//            return self.connectionIdleTimerTriggered(timer.connectionID)
+//        }
     }
 
     @inlinable
     mutating func connectionEstablishFailed(_ error: Error, for request: ConnectionRequest) -> Action {
-        self.failedConsecutiveConnectionAttempts += 1
-
-        self.connections.backoffNextConnectionAttempt(request.connectionID)
-        let backoff = Self.calculateBackoff(failedAttempt: self.failedConsecutiveConnectionAttempts)
-        return .init(request: .none, connection: .scheduleBackoffTimer(request.connectionID, backoff: backoff))
+        fatalError()
+//        self.failedConsecutiveConnectionAttempts += 1
+//
+//        self.connections.backoffNextConnectionAttempt(request.connectionID)
+//        let backoff = Self.calculateBackoff(failedAttempt: self.failedConsecutiveConnectionAttempts)
+//        return .init(request: .none, connection: .scheduleBackoffTimer(request.connectionID, backoff: backoff))
     }
 
     @inlinable
@@ -361,7 +364,8 @@ struct PoolStateMachine<
         case .createConnection(let request):
             return .init(request: .none, connection: .makeConnection(request))
         case .cancelIdleTimeoutTimer(let connectionID):
-            return .init(request: .none, connection: .cancelIdleTimeoutTimer(connectionID))
+            fatalError()
+//            return .init(request: .none, connection: .cancelIdleTimeoutTimer(connectionID))
         case .none:
             return .none()
         }
@@ -396,8 +400,8 @@ struct PoolStateMachine<
         }
 
         self.cacheNoMoreConnectionsAllowed = false
-
-        return .init(request: .none, connection: .closeConnection(connection, cancelKeepAliveTimer: cancelKeepAliveTimer))
+        fatalError()
+//        return .init(request: .none, connection: .closeConnection(connection, cancelKeepAliveTimer: cancelKeepAliveTimer))
     }
 
     @inlinable
@@ -465,25 +469,27 @@ struct PoolStateMachine<
         }
 
         func makeIdleConnectionAction(for connectionID: ConnectionID, scheduleTimeout: Bool) -> ConnectionAction {
-            switch (scheduleTimeout, self.configuration.keepAlive) {
-            case (false, false):
-                return .none
-            case (true, false):
-                return .scheduleIdleTimeoutTimer(connectionID)
-            case (false, true):
-                return .scheduleKeepAliveTimer(connectionID)
-            case (true, true):
-                return .scheduleKeepAliveAndIdleTimeoutTimer(connectionID)
-            }
+            fatalError()
+//            switch (scheduleTimeout, self.configuration.keepAlive) {
+//            case (false, false):
+//                return .none
+//            case (true, false):
+//                return .scheduleIdleTimeoutTimer(connectionID)
+//            case (false, true):
+//                return .scheduleKeepAliveTimer(connectionID)
+//            case (true, true):
+//                return .scheduleKeepAliveAndIdleTimeoutTimer(connectionID)
+//            }
         }
 
         switch (availableContext.use, availableContext.info) {
         case (.persisted, .idle):
-            let connectionID = self.connections.parkConnection(at: index)
-            return .init(
-                request: .none,
-                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: false)
-            )
+            fatalError()
+//            let connectionID = self.connections.parkConnection(at: index)
+//            return .init(
+//                request: .none,
+//                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: false)
+//            )
 
         case (.demand, .idle):
 
@@ -496,15 +502,17 @@ struct PoolStateMachine<
                 scheduleKeepAliveTimer: self.configuration.keepAlive,
                 scheduleIdleTimeoutTimer: newIdle
             )
+            fatalError()
 
-            return .init(
-                request: .none,
-                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: newIdle)
-            )
+//            return .init(
+//                request: .none,
+//                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: newIdle)
+//            )
 
         case (.overflow, .idle):
-            let connection = self.connections.closeConnection(at: index)
-            return .init(request: .none, connection: .closeConnection(connection, cancelKeepAliveTimer: false))
+            fatalError()
+//            let connection = self.connections.closeConnection(at: index)
+//            return .init(request: .none, connection: .closeConnection(connection, cancelKeepAliveTimer: false))
 
         case (_, .leased):
             return .none()

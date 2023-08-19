@@ -3,7 +3,7 @@ import NIOCore
 import Logging
 
 @main
-@available(macOS 13, *)
+@available(macOS 14, *)
 enum Server {
     static func main() async throws {
         var mlogger = Logger(label: "psql")
@@ -24,7 +24,13 @@ enum Server {
         clientConfig.authentication.database = "postgres"
         clientConfig.authentication.password = "password"
 
-        let client = try PostgresClient(configuration: clientConfig, eventLoopGroup: eventLoopGroup, backgroundLogger: logger)
+        mlogger.info("Lets go")
+
+        let client = try PostgresClient(
+            configuration: clientConfig,
+            eventLoopGroup: eventLoopGroup,
+            backgroundLogger: logger
+        )
 
         await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 0..<2 {

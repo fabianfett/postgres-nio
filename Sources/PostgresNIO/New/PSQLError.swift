@@ -18,12 +18,14 @@ public struct PSQLError: Error {
 
             case queryCancelled
             case tooManyParameters
-            case connectionQuiescing
-            case connectionClosed
+            case clientClosesConnection
+            case clientClosedConnection
+            case serverClosedConnection
             case connectionError
             case uncleanShutdown
 
-            case timeoutError
+            case listenFailed
+            case unlistenFailed
             case poolClosed
         }
 
@@ -45,12 +47,22 @@ public struct PSQLError: Error {
         public static let invalidCommandTag = Self(.invalidCommandTag)
         public static let queryCancelled = Self(.queryCancelled)
         public static let tooManyParameters = Self(.tooManyParameters)
-        public static let connectionQuiescing = Self(.connectionQuiescing)
-        public static let connectionClosed = Self(.connectionClosed)
+        public static let clientClosesConnection = Self(.clientClosesConnection)
+        public static let clientClosedConnection = Self(.clientClosedConnection)
+        public static let serverClosedConnection = Self(.serverClosedConnection)
         public static let connectionError = Self(.connectionError)
+
         public static let uncleanShutdown = Self(.uncleanShutdown)
-        public static let timeoutError = Self(.timeoutError)
         public static let poolClosed = Self(.poolClosed)
+
+        public static let listenFailed = Self.init(.listenFailed)
+        public static let unlistenFailed = Self.init(.unlistenFailed)
+
+        @available(*, deprecated, renamed: "clientClosesConnection")
+        public static let connectionQuiescing = Self.clientClosesConnection
+
+        @available(*, deprecated, message: "Use the more specific `serverClosedConnection` or `clientClosedConnection` instead")
+        public static let connectionClosed = Self.serverClosedConnection
 
         public var description: String {
             switch self.base {
@@ -78,25 +90,29 @@ public struct PSQLError: Error {
                 return "queryCancelled"
             case .tooManyParameters:
                 return "tooManyParameters"
-            case .connectionQuiescing:
-                return "connectionQuiescing"
-            case .connectionClosed:
-                return "connectionClosed"
+            case .clientClosesConnection:
+                return "clientClosesConnection"
+            case .clientClosedConnection:
+                return "clientClosedConnection"
+            case .serverClosedConnection:
+                return "serverClosedConnection"
             case .connectionError:
                 return "connectionError"
             case .uncleanShutdown:
                 return "uncleanShutdown"
-            case .timeoutError:
-                return "timeoutError"
             case .poolClosed:
                 return "poolClosed"
+            case .listenFailed:
+                return "listenFailed"
+            case .unlistenFailed:
+                return "unlistenFailed"
             }
         }
     }
 
     private var backing: Backing
 
-    private mutating func copyBackingStoriageIfNecessary() {
+    private mutating func copyBackingStorageIfNecessary() {
         if !isKnownUniquelyReferenced(&self.backing) {
             self.backing = self.backing.copy()
         }
@@ -106,7 +122,7 @@ public struct PSQLError: Error {
     public internal(set) var code: Code {
         get { self.backing.code }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.code = newValue
         }
     }
@@ -115,7 +131,7 @@ public struct PSQLError: Error {
     public internal(set) var serverInfo: ServerInfo? {
         get { self.backing.serverInfo }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.serverInfo = newValue
         }
     }
@@ -124,7 +140,7 @@ public struct PSQLError: Error {
     public internal(set) var underlying: Error? {
         get { self.backing.underlying }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.underlying = newValue
         }
     }
@@ -133,7 +149,7 @@ public struct PSQLError: Error {
     public internal(set) var file: String? {
         get { self.backing.file }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.file = newValue
         }
     }
@@ -142,7 +158,7 @@ public struct PSQLError: Error {
     public internal(set) var line: Int? {
         get { self.backing.line }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.line = newValue
         }
     }
@@ -151,7 +167,7 @@ public struct PSQLError: Error {
     public internal(set) var query: PostgresQuery? {
         get { self.backing.query }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.query = newValue
         }
     }
@@ -161,7 +177,7 @@ public struct PSQLError: Error {
     var backendMessage: PostgresBackendMessage? {
         get { self.backing.backendMessage }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.backendMessage = newValue
         }
     }
@@ -171,7 +187,7 @@ public struct PSQLError: Error {
     var unsupportedAuthScheme: UnsupportedAuthScheme? {
         get { self.backing.unsupportedAuthScheme }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.unsupportedAuthScheme = newValue
         }
     }
@@ -181,7 +197,7 @@ public struct PSQLError: Error {
     var invalidCommandTag: String? {
         get { self.backing.invalidCommandTag }
         set {
-            self.copyBackingStoriageIfNecessary()
+            self.copyBackingStorageIfNecessary()
             self.backing.invalidCommandTag = newValue
         }
     }
@@ -199,21 +215,13 @@ public struct PSQLError: Error {
 
     private final class Backing {
         fileprivate var code: Code
-
         fileprivate var serverInfo: ServerInfo?
-
         fileprivate var underlying: Error?
-
         fileprivate var file: String?
-
         fileprivate var line: Int?
-
         fileprivate var query: PostgresQuery?
-
         fileprivate var backendMessage: PostgresBackendMessage?
-
         fileprivate var unsupportedAuthScheme: UnsupportedAuthScheme?
-
         fileprivate var invalidCommandTag: String?
 
         init(code: Code) {
@@ -233,10 +241,10 @@ public struct PSQLError: Error {
     }
 
     public struct ServerInfo {
-        public struct Field: Hashable, Sendable {
+        public struct Field: Hashable, Sendable, CustomStringConvertible {
             fileprivate let backing: PostgresBackendMessage.Field
 
-            private init(_ backing: PostgresBackendMessage.Field) {
+            fileprivate init(_ backing: PostgresBackendMessage.Field) {
                 self.backing = backing
             }
 
@@ -315,6 +323,47 @@ public struct PSQLError: Error {
 
             /// Routine: the name of the source-code routine reporting the error.
             public static let routine = Self(.routine)
+
+            public var description: String {
+                switch self.backing {
+                case .localizedSeverity:
+                    return "localizedSeverity"
+                case .severity:
+                    return "severity"
+                case .sqlState:
+                    return "sqlState"
+                case .message:
+                    return "message"
+                case .detail:
+                    return "detail"
+                case .hint:
+                    return "hint"
+                case .position:
+                    return "position"
+                case .internalPosition:
+                    return "internalPosition"
+                case .internalQuery:
+                    return "internalQuery"
+                case .locationContext:
+                    return "locationContext"
+                case .schemaName:
+                    return "schemaName"
+                case .tableName:
+                    return "tableName"
+                case .columnName:
+                    return "columnName"
+                case .dataTypeName:
+                    return "dataTypeName"
+                case .constraintName:
+                    return "constraintName"
+                case .file:
+                    return "file"
+                case .line:
+                    return "line"
+                case .routine:
+                    return "routine"
+                }
+            }
         }
 
         let underlying: PostgresBackendMessage.ErrorResponse
@@ -344,19 +393,33 @@ public struct PSQLError: Error {
         return new
     }
 
-    static var connectionQuiescing: PSQLError { PSQLError(code: .connectionQuiescing) }
+    static func clientClosesConnection(underlying: Error?) -> PSQLError {
+        var error = PSQLError(code: .clientClosesConnection)
+        error.underlying = underlying
+        return error
+    }
 
-    static var connectionClosed: PSQLError { PSQLError(code: .connectionClosed) }
+    static func clientClosedConnection(underlying: Error?) -> PSQLError {
+        var error = PSQLError(code: .clientClosedConnection)
+        error.underlying = underlying
+        return error
+    }
 
-    static var authMechanismRequiresPassword: PSQLError { PSQLError(code: .authMechanismRequiresPassword) }
+    static func serverClosedConnection(underlying: Error?) -> PSQLError {
+        var error = PSQLError(code: .serverClosedConnection)
+        error.underlying = underlying
+        return error
+    }
 
-    static var sslUnsupported: PSQLError { PSQLError(code: .sslUnsupported) }
+    static let authMechanismRequiresPassword = PSQLError(code: .authMechanismRequiresPassword)
 
-    static var queryCancelled: PSQLError { PSQLError(code: .queryCancelled) }
+    static let sslUnsupported = PSQLError(code: .sslUnsupported)
 
-    static var uncleanShutdown: PSQLError { PSQLError(code: .uncleanShutdown) }
+    static let queryCancelled = PSQLError(code: .queryCancelled)
 
-    static var receivedUnencryptedDataAfterSSLRequest: PSQLError { PSQLError(code: .receivedUnencryptedDataAfterSSLRequest) }
+    static let uncleanShutdown = PSQLError(code: .uncleanShutdown)
+
+    static let receivedUnencryptedDataAfterSSLRequest = PSQLError(code: .receivedUnencryptedDataAfterSSLRequest)
 
     static func server(_ response: PostgresBackendMessage.ErrorResponse) -> PSQLError {
         var error = PSQLError(code: .server)
@@ -394,6 +457,12 @@ public struct PSQLError: Error {
         return error
     }
 
+    static func unlistenError(underlying: Error) -> PSQLError {
+        var error = PSQLError(code: .unlistenFailed)
+        error.underlying = underlying
+        return error
+    }
+
     enum UnsupportedAuthScheme {
         case none
         case kerberosV5
@@ -405,12 +474,67 @@ public struct PSQLError: Error {
         case sasl(mechanisms: [String])
     }
 
-    static var timeoutError: PSQLError {
-        Self.init(code: .timeoutError)
-    }
-
     static var poolClosed: PSQLError {
         Self.init(code: .poolClosed)
+    }
+}
+
+extension PSQLError: CustomStringConvertible {
+    public var description: String {
+        // This may seem very odd... But we are afraid that users might accidentally send the
+        // unfiltered errors out to end-users. This may leak security relevant information. For this
+        // reason we overwrite the error description by default to this generic "Database error"
+        """
+        PSQLError – Generic description to prevent accidental leakage of sensitive data. For debugging details, use `String(reflecting: error)`.
+        """
+    }
+}
+
+extension PSQLError: CustomDebugStringConvertible {
+    public var debugDescription: String {
+        var result = #"PSQLError(code: \#(self.code)"#
+
+        if let serverInfo = self.serverInfo?.underlying {
+            result.append(", serverInfo: [")
+            result.append(
+                serverInfo.fields
+                    .sorted(by: { $0.key.rawValue < $1.key.rawValue })
+                    .map { "\(PSQLError.ServerInfo.Field($0.0)): \($0.1)" }
+                    .joined(separator: ", ")
+            )
+            result.append("]")
+        }
+
+        if let backendMessage = self.backendMessage {
+            result.append(", backendMessage: \(String(reflecting: backendMessage))")
+        }
+
+        if let unsupportedAuthScheme = self.unsupportedAuthScheme {
+            result.append(", unsupportedAuthScheme: \(unsupportedAuthScheme)")
+        }
+
+        if let invalidCommandTag = self.invalidCommandTag {
+            result.append(", invalidCommandTag: \(invalidCommandTag)")
+        }
+
+        if let underlying = self.underlying {
+            result.append(", underlying: \(String(reflecting: underlying))")
+        }
+
+        if let file = self.file {
+            result.append(", triggeredFromRequestInFile: \(file)")
+            if let line = self.line {
+                result.append(", line: \(line)")
+            }
+        }
+
+        if let query = self.query {
+            result.append(", query: \(String(reflecting: query))")
+        }
+
+        result.append(")")
+
+        return result
     }
 }
 
@@ -507,7 +631,9 @@ extension PostgresDecodingError: CustomStringConvertible {
         // This may seem very odd... But we are afraid that users might accidentally send the
         // unfiltered errors out to end-users. This may leak security relevant information. For this
         // reason we overwrite the error description by default to this generic "Database error"
-        "Database error"
+        """
+        PostgresDecodingError – Generic description to prevent accidental leakage of sensitive data. For debugging details, use `String(reflecting: error)`.
+        """
     }
 }
 
@@ -521,7 +647,7 @@ extension PostgresDecodingError: CustomDebugStringConvertible {
         result.append(#", postgresType: \#(self.postgresType)"#)
         result.append(#", postgresFormat: \#(self.postgresFormat)"#)
         if let postgresData = self.postgresData {
-            result.append(#", postgresData: \#(postgresData.debugDescription)"#) // https://github.com/apple/swift-nio/pull/2418
+            result.append(#", postgresData: \#(String(reflecting: postgresData))"#)
         }
         result.append(#", file: \#(self.file)"#)
         result.append(#", line: \#(self.line)"#)

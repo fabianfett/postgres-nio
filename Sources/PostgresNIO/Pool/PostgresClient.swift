@@ -3,6 +3,7 @@ import NIOSSL
 import Logging
 import PoolModule
 
+@available(macOS 14.0, *)
 public final class PostgresClient: Sendable {
 
     public struct Configuration: Sendable {
@@ -118,7 +119,8 @@ public final class PostgresClient: Sendable {
         ConnectionRequest<PostgresConnection>,
         ConnectionRequest.ID,
         PostgresKeepAliveBehavor,
-        PostgresClientMetrics
+        PostgresClientMetrics,
+        ContinuousClock
     >
 
     let pool: Pool
@@ -127,14 +129,15 @@ public final class PostgresClient: Sendable {
         self.pool = try ConnectionPool(
             configuration: .init(configuration),
             idGenerator: ConnectionIDGenerator(),
-            factory: PostgresConnectionFactory(configuration: .init(configuration), logger: backgroundLogger),
+            factory: PostgresConnectionFactory(configuration: .init(configuration), eventLoopGroup: eventLoopGroup, logger: backgroundLogger),
+            requestType: ConnectionRequest<PostgresConnection>.self,
             keepAliveBehavior: .init(configuration, logger: backgroundLogger),
             metricsDelegate: .init(logger: backgroundLogger),
-            eventLoopGroup: eventLoopGroup
+            clock: ContinuousClock()
         )
     }
 
-    @available(macOS 13.0, *)
+    @available(macOS 14.0, *)
     public func query<Clock: _Concurrency.Clock>(
         _ query: PostgresQuery,
         deadline: Clock.Instant,
@@ -156,25 +159,12 @@ public final class PostgresClient: Sendable {
         return try await closure(connection)
     }
 
-    public func shutdown(graceful: Bool) async throws {
-        try await self.pool.shutdown()
-    }
-
-    public func shutdown(graceful: Bool, promise: EventLoopPromise<Void>?) {
-        self.pool.shutdown(promise: promise)
-    }
-
-    public func shutdown(graceful: Bool) -> EventLoopFuture<Void> {
-        let promise = self.pool.eventLoopGroup.any().makePromise(of: Void.self)
-        self.shutdown(graceful: graceful, promise: promise)
-        return promise.futureResult
-    }
-
-    public func syncShutdown() throws {
-        try self.shutdown(graceful: false).wait()
+    public func run() async {
+        await self.pool.run()
     }
 }
 
+@available(macOS 14.0, *)
 struct PostgresConnectionFactory: ConnectionFactory {
     typealias ConnectionIDGenerator = PoolModule.ConnectionIDGenerator
     typealias Request = PoolModule.ConnectionRequest<PostgresConnection>
@@ -182,25 +172,33 @@ struct PostgresConnectionFactory: ConnectionFactory {
     typealias MetricsDelegate = PostgresClientMetrics
     typealias ConnectionID = Int
     typealias Connection = PostgresConnection
+    typealias Clock = ContinuousClock
 
     let configuration: PostgresConnection.Configuration
+    let eventLoopGroup: any EventLoopGroup
     let logger: Logger
 
-    init(configuration: PostgresConnection.Configuration, logger: Logger) {
+    init(configuration: PostgresConnection.Configuration, eventLoopGroup: any EventLoopGroup, logger: Logger) {
         self.configuration = configuration
+        self.eventLoopGroup = eventLoopGroup
         self.logger = logger
     }
 
-    func makeConnection(on eventLoop: EventLoop, id: Int, for pool: ConnectionPool<PostgresConnectionFactory, PostgresConnection, Int, ConnectionIDGenerator, PoolModule.ConnectionRequest<PostgresConnection>, Int, PostgresKeepAliveBehavor, PostgresClientMetrics>) -> EventLoopFuture<ConnectionAndMetadata<PostgresConnection>> {
+    func makeConnection(
+        id: Int,
+        for pool: ConnectionPool<PostgresConnectionFactory, PostgresConnection, Int, ConnectionIDGenerator, ConnectionRequest<PostgresConnection>, Int, PostgresKeepAliveBehavor, PostgresClientMetrics, ContinuousClock>
+    ) async throws -> ConnectionAndMetadata<PostgresConnection> {
         var connectionLogger = self.logger
         connectionLogger[postgresMetadataKey: .connectionID] = "\(id)"
 
-        return PostgresConnection.connect(
-            on: eventLoop,
+        let connection = try await PostgresConnection.connect(
+            on: self.eventLoopGroup.any(),
             configuration: self.configuration,
             id: id,
             logger: connectionLogger
-        ).map { .init(connection: $0, maximalStreamsOnConnection: 1) }
+        ).get()
+
+        return ConnectionAndMetadata(connection: connection, maximalStreamsOnConnection: 1)
     }
 }
 
@@ -215,11 +213,12 @@ struct PostgresKeepAliveBehavor: ConnectionKeepAliveBehavior {
         self.logger = logger
     }
 
-    func runKeepAlive(for connection: PostgresConnection) -> EventLoopFuture<Void> {
-        connection.query(self.query, logger: self.logger).map { _ in }
+    func runKeepAlive(for connection: PostgresConnection) async throws {
+        try await connection.query(self.query, logger: self.logger).map { _ in }.get()
     }
 }
 
+@available(macOS 14.0, *)
 extension PostgresKeepAliveBehavor {
     init(_ config: PostgresClient.Configuration, logger: Logger) {
         self = .init(keepAliveFrequency: config.pool.keepAliveFrequency, logger: logger)
@@ -227,6 +226,7 @@ extension PostgresKeepAliveBehavor {
     }
 }
 
+@available(macOS 14.0, *)
 extension ConnectionPoolConfiguration {
     init(_ config: PostgresClient.Configuration) {
         self = .init()
@@ -237,6 +237,7 @@ extension ConnectionPoolConfiguration {
     }
 }
 
+@available(macOS 14.0, *)
 extension PostgresConnection.Configuration {
     init(_ config: PostgresClient.Configuration) throws {
         try self.init(
@@ -250,6 +251,7 @@ extension PostgresConnection.Configuration {
     }
 }
 
+@available(macOS 14.0, *)
 extension PostgresConnection.Configuration.TLS {
     // TODO: Make async
     init(_ config: PostgresClient.Configuration.TLS) throws {
@@ -281,7 +283,8 @@ extension PoolError {
         case .poolShutdown:
             psqlError = PSQLError.poolClosed
         case .requestTimeout:
-            psqlError = lastConnectError ?? PSQLError.timeoutError
+            #warning("TBD: Fallback error")
+            psqlError = lastConnectError ?? PSQLError.uncleanShutdown
         case .requestCancelled:
             psqlError = PSQLError.queryCancelled
         default:

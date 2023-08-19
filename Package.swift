@@ -15,9 +15,9 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.1.0"),
-        .package(url: "https://github.com/apple/swift-collections.git", from: "1.0.3"),
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.52.0"),
-        .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.16.0"),
+        .package(url: "https://github.com/apple/swift-collections.git", from: "1.0.4"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.58.0"),
+        .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.18.0"),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.23.1"),
         .package(url: "https://github.com/apple/swift-crypto.git", "1.0.0" ..< "3.0.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.0.0"),
@@ -46,7 +46,6 @@ let package = Package(
             dependencies: [
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "DequeModule", package: "swift-collections"),
-                .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
             ]
         ),

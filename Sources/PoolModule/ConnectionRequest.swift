@@ -4,7 +4,6 @@ import NIOCore
 public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequestProtocol {
     private enum AsyncReportingMechanism {
         case continuation(CheckedContinuation<Connection, Error>)
-        case promise(EventLoopPromise<Connection>)
     }
 
     public typealias ID = Int
@@ -25,16 +24,6 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
         self.reportingMechanism = .continuation(continuation)
     }
 
-    init(
-        id: Int,
-        deadline: NIOCore.NIODeadline,
-        promise: EventLoopPromise<Connection>
-    ) {
-        self.id = id
-        self.deadline = deadline
-        self.reportingMechanism = .promise(promise)
-    }
-
     public func complete(with result: Result<Connection, PoolError>) {
         switch result {
         case .success(let success):
@@ -48,8 +37,6 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
         switch self.reportingMechanism {
         case .continuation(let continuation):
             continuation.resume(returning: connection)
-        case .promise(let promise):
-            promise.succeed(connection)
         }
     }
 
@@ -57,8 +44,6 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
         switch self.reportingMechanism {
         case .continuation(let continuation):
             continuation.resume(throwing: error)
-        case .promise(let promise):
-            promise.fail(error)
         }
     }
 }

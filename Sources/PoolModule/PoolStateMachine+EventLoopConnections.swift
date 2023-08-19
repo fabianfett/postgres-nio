@@ -111,15 +111,14 @@ extension PoolStateMachine {
         let id: Connection.ID
 
         @usableFromInline
-        private(set) var state: State
+        private(set) var state: State = .starting
 
         @usableFromInline
-        private(set) var nextTimerID: Int
+        private(set) var nextTimerID: Int = 0
 
         @inlinable
         init(id: Connection.ID) {
             self.id = id
-            self.state = .starting
         }
 
         @inlinable
@@ -893,7 +892,9 @@ extension PoolStateMachine {
                 self.stats.availableStreams -= 1
             }
 
-            return connection
+            fatalError()
+
+//            return connection
         }
 
         @inlinable
@@ -925,7 +926,8 @@ extension PoolStateMachine {
         mutating func closeConnection(at index: Int) -> Connection {
             self.stats.idle -= 1
             self.stats.closing += 1
-            return self.connections[index].close()
+            fatalError()
+//            return self.connections[index].close()
         }
 
         @inlinable
@@ -943,23 +945,25 @@ extension PoolStateMachine {
                 return nil
             }
 
-            guard let (connection, idleState) = self.connections[index].closeIfIdle() else {
-                return nil
-            }
+            fatalError()
 
-            self.stats.idle -= 1
-            self.stats.closing += 1
-
-            if idleState.runningKeepAlive {
-                self.stats.runningKeepAlive -= 1
-                if self.keepAliveReducesAvailableStreams {
-                    self.stats.availableStreams += 1
-                }
-            }
-
-            self.stats.availableStreams -= idleState.maxStreams
-
-            return (connection, !idleState.runningKeepAlive)
+//            guard let (connection, idleState) = self.connections[index].closeIfIdle() else {
+//                return nil
+//            }
+//
+//            self.stats.idle -= 1
+//            self.stats.closing += 1
+//
+//            if idleState.runningKeepAlive {
+//                self.stats.runningKeepAlive -= 1
+//                if self.keepAliveReducesAvailableStreams {
+//                    self.stats.availableStreams += 1
+//                }
+//            }
+//
+//            self.stats.availableStreams -= idleState.maxStreams
+//
+//            return (connection, !idleState.runningKeepAlive)
         }
 
         // MARK: Connection failure
@@ -978,33 +982,35 @@ extension PoolStateMachine {
                 return nil
             }
 
-            switch self.connections[index].closed() {
-            case .idle(let maxStreams, let runningKeepAlive):
-                self.stats.idle -= 1
-                self.stats.availableStreams -= maxStreams
-                if runningKeepAlive {
-                    self.stats.runningKeepAlive -= 1
-                }
-            case .closing:
-                self.stats.closing -= 1
-            case .leased(let usedStreams, let maxStreams, let runningKeepAlive):
-                self.stats.leased -= 1
-                self.stats.availableStreams -= maxStreams - usedStreams
-                self.stats.leasedStreams -= usedStreams
-                if runningKeepAlive {
-                    self.stats.runningKeepAlive -= 1
-                }
-            }
-            let lastIndex = self.connections.endIndex - 1
+            fatalError()
 
-            if index == lastIndex {
-                self.connections.remove(at: index)
-            } else {
-                self.connections.swapAt(index, lastIndex)
-                self.connections.remove(at: lastIndex)
-            }
-
-            return FailedConnectionContext(connectionsStarting: 0)
+//            switch self.connections[index].closed() {
+//            case .idle(let maxStreams, let runningKeepAlive):
+//                self.stats.idle -= 1
+//                self.stats.availableStreams -= maxStreams
+//                if runningKeepAlive {
+//                    self.stats.runningKeepAlive -= 1
+//                }
+//            case .closing:
+//                self.stats.closing -= 1
+//            case .leased(let usedStreams, let maxStreams, let runningKeepAlive):
+//                self.stats.leased -= 1
+//                self.stats.availableStreams -= maxStreams - usedStreams
+//                self.stats.leasedStreams -= usedStreams
+//                if runningKeepAlive {
+//                    self.stats.runningKeepAlive -= 1
+//                }
+//            }
+//            let lastIndex = self.connections.endIndex - 1
+//
+//            if index == lastIndex {
+//                self.connections.remove(at: index)
+//            } else {
+//                self.connections.swapAt(index, lastIndex)
+//                self.connections.remove(at: lastIndex)
+//            }
+//
+//            return FailedConnectionContext(connectionsStarting: 0)
         }
 
         // MARK: Shutdown
@@ -1012,21 +1018,22 @@ extension PoolStateMachine {
         mutating func shutdown(_ cleanup: inout ConnectionAction.Shutdown) {
             self.connections = self.connections.enumerated().compactMap { index, connectionState in
                 var connectionState = connectionState
-                switch connectionState.shutdown() {
-                case .cancelBackoff(let connectionID):
-                    cleanup.backoffTimersToCancel.append(connectionID)
-                    return nil
-
-                case .close(let connection, let wasIdle):
-                    let cancelIdleTimer = index >= self.minimumConcurrentConnections
-                    cleanup.connections.append(
-                        .init(cancelIdleTimer: cancelIdleTimer, cancelKeepAliveTimer: wasIdle, connection: connection)
-                    )
-                    return connectionState
-
-                case .none:
-                    return connectionState
-                }
+                fatalError()
+//                switch connectionState.shutdown() {
+//                case .cancelBackoff(let connectionID):
+//                    cleanup.backoffTimersToCancel.append(connectionID)
+//                    return nil
+//
+//                case .close(let connection, let wasIdle):
+//                    let cancelIdleTimer = index >= self.minimumConcurrentConnections
+//                    cleanup.connections.append(
+//                        .init(cancelIdleTimer: cancelIdleTimer, cancelKeepAliveTimer: wasIdle, connection: connection)
+//                    )
+//                    return connectionState
+//
+//                case .none:
+//                    return connectionState
+//                }
             }
         }
 

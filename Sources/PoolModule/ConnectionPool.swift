@@ -198,22 +198,21 @@ public final class ConnectionPool<
 
     @inlinable
     public func leaseConnections(for requests: some Collection<Request>) {
-        let unlocked = self.stateLock.withLock { () -> [Actions.Unlocked] in
-            var unlocked = [Actions.Unlocked]()
-            unlocked.reserveCapacity(requests.count)
+        let actions = self.stateLock.withLock { () -> [StateMachine.Action] in
+            var actions = [StateMachine.Action]()
+            actions.reserveCapacity(requests.count)
 
             for request in requests {
                 let stateMachineAction = self._stateMachine.leaseConnection(request)
-                let poolAction = Actions(from: stateMachineAction, lastConnectError: self._lastConnectError)
-                self.runLockedConnectionAction(poolAction.locked.connection)
-                unlocked.append(poolAction.unlocked)
+                actions.append(stateMachineAction)
             }
 
-            return unlocked
+            return actions
         }
 
-        for unlockedActions in unlocked {
-            self.runUnlockedActions(unlockedActions)
+        for action in actions {
+            self.runRequestAction(action.request)
+            self.runConnectionAction(action.connection)
         }
     }
 
@@ -422,8 +421,8 @@ public final class ConnectionPool<
     }
 
     @inlinable
-    /*private*/ func runTimer(_ timer: Conne, in poolGroup: inout DiscardingTaskGroup) {
-        poolGroup.addTask(operation: {
+    /*private*/ func runTimer(_ timer: StateMachine.Timer, in poolGroup: inout DiscardingTaskGroup) {
+        poolGroup.addTask(priority: nil) { () async -> () in
             await withTaskGroup(of: TimerRunResult.self, returning: Void.self) { taskGroup in
                 taskGroup.addTask {
                     do {
@@ -436,15 +435,17 @@ public final class ConnectionPool<
 
                 taskGroup.addTask {
                     await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                        self.stateLock.withLock {
+                        let continuation = self.stateLock.withLock {
                             self._stateMachine.timerScheduled(timer, cancelContinuation: continuation)
                         }
+
+                        continuation?.resume(returning: ())
                     }
+
                     return .cancellationContinuationFinished
                 }
 
-                var iterator = taskGroup.makeAsyncIterator()
-                switch taskGroup.next()! {
+                switch await taskGroup.next()! {
                 case .cancellationContinuationFinished:
                     taskGroup.cancelAll()
                 case .timerCancelled:
@@ -457,7 +458,7 @@ public final class ConnectionPool<
 
                 return
             }
-        })
+        }
     }
 }
 
