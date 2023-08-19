@@ -43,7 +43,7 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
     }
 }
 
-fileprivate let requestIDGenerator = PoolModule.ConnectionIDGenerator()
+fileprivate let requestIDGenerator = ConnectionPoolModule.ConnectionIDGenerator()
 
 @available(macOS 14, *)
 extension ConnectionPool where Request == ConnectionRequest<Connection> {

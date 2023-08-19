@@ -1,4 +1,4 @@
-import PoolModule
+import ConnectionPoolModule
 import Logging
 
 final class PostgresClientMetrics: ConnectionPoolMetricsDelegate {

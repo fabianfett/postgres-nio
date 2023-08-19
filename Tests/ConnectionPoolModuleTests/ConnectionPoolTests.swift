@@ -1,4 +1,4 @@
-@testable import PoolModule
+@testable import ConnectionPoolModule
 import XCTest
 import NIOEmbedded
 

@@ -138,7 +138,7 @@ public final class ConnectionPool<
     @usableFromInline private(set) var _stateMachine: StateMachine
     @usableFromInline private(set) var _lastConnectError: Error?
 
-    private let requestIDGenerator = PoolModule.ConnectionIDGenerator()
+    private let requestIDGenerator = ConnectionPoolModule.ConnectionIDGenerator()
 
     @usableFromInline
     let eventStream: AsyncStream<NewPoolActions>

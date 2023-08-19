@@ -1,7 +1,7 @@
 import NIOCore
 import NIOSSL
 import Logging
-import PoolModule
+import ConnectionPoolModule
 
 @available(macOS 14.0, *)
 public final class PostgresClient: Sendable {
@@ -166,8 +166,8 @@ public final class PostgresClient: Sendable {
 
 @available(macOS 14.0, *)
 struct PostgresConnectionFactory: ConnectionFactory {
-    typealias ConnectionIDGenerator = PoolModule.ConnectionIDGenerator
-    typealias Request = PoolModule.ConnectionRequest<PostgresConnection>
+    typealias ConnectionIDGenerator = ConnectionPoolModule.ConnectionIDGenerator
+    typealias Request = ConnectionPoolModule.ConnectionRequest<PostgresConnection>
     typealias KeepAliveBehavior = PostgresKeepAliveBehavor
     typealias MetricsDelegate = PostgresClientMetrics
     typealias ConnectionID = Int

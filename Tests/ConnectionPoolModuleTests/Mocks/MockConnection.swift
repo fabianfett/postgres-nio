@@ -1,7 +1,7 @@
 import DequeModule
 import NIOCore
 import NIOConcurrencyHelpers
-import PoolModule
+import ConnectionPoolModule
 
 // Sendability enforced through the lock
 final class MockConnection: PooledConnection, @unchecked Sendable {

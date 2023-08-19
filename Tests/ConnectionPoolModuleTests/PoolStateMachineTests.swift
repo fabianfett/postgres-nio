@@ -1,7 +1,7 @@
 import NIOCore
 import NIOEmbedded
 import XCTest
-@testable import PoolModule
+@testable import ConnectionPoolModule
 
 final class PoolStateMachineTests: XCTestCase {
     var configuration = PoolConfiguration()
