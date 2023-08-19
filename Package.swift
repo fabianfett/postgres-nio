@@ -46,7 +46,6 @@ let package = Package(
             dependencies: [
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "DequeModule", package: "swift-collections"),
-                .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
             ]
         ),
         .testTarget(

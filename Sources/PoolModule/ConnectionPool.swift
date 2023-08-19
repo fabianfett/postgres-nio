@@ -1,11 +1,9 @@
-import NIOCore
-import NIOConcurrencyHelpers
 
 @available(macOS 14.0, *)
 public protocol ConnectionKeepAliveBehavior: Sendable {
     associatedtype Connection: PooledConnection
 
-    var keepAliveFrequency: TimeAmount? { get }
+    var keepAliveFrequency: Duration? { get }
 
     func runKeepAlive(for connection: Connection) async throws
 }
@@ -53,12 +51,12 @@ public struct ConnectionPoolConfiguration {
 
     public var maximumConnectionHardLimit: Int
 
-    public var idleTimeout: TimeAmount
+    public var idleTimeout: Duration
 
-    public init() {
-        self.minimumConnectionCount = System.coreCount
-        self.maximumConnectionSoftLimit = System.coreCount
-        self.maximumConnectionHardLimit = System.coreCount * 4
+    public init(coreCount: Int) {
+        self.minimumConnectionCount = coreCount
+        self.maximumConnectionSoftLimit = coreCount
+        self.maximumConnectionHardLimit = coreCount * 4
         self.idleTimeout = .seconds(60)
     }
 }
@@ -68,8 +66,6 @@ public protocol PooledConnection: AnyObject, Sendable {
     associatedtype ID: Hashable
 
     var id: ID { get }
-
-    var eventLoop: EventLoop { get }
 
     func onClose(_ closure: @escaping @Sendable () -> ())
 

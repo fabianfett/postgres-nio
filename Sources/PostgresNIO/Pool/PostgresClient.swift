@@ -22,9 +22,9 @@ public final class PostgresClient: Sendable {
 
             public var maxConsecutivePicksFromEventLoopQueue: UInt8 = 16
 
-            public var connectionIdleTimeout: TimeAmount = .seconds(60)
+            public var connectionIdleTimeout: Duration = .seconds(60)
 
-            public var keepAliveFrequency: TimeAmount = .seconds(30)
+            public var keepAliveFrequency: Duration = .seconds(30)
 
             public var keepAliveQuery: PostgresQuery = "SELECT 1;"
 
@@ -202,12 +202,13 @@ struct PostgresConnectionFactory: ConnectionFactory {
     }
 }
 
+@available(macOS 14.0, *)
 struct PostgresKeepAliveBehavor: ConnectionKeepAliveBehavior {
-    var keepAliveFrequency: TimeAmount?
+    var keepAliveFrequency: Duration?
     var query: PostgresQuery
     var logger: Logger
 
-    init(keepAliveFrequency: TimeAmount?, logger: Logger) {
+    init(keepAliveFrequency: Duration?, logger: Logger) {
         self.keepAliveFrequency = keepAliveFrequency
         self.query = "SELECT 1;"
         self.logger = logger
@@ -229,7 +230,7 @@ extension PostgresKeepAliveBehavor {
 @available(macOS 14.0, *)
 extension ConnectionPoolConfiguration {
     init(_ config: PostgresClient.Configuration) {
-        self = .init()
+        self = .init(coreCount: System.coreCount)
         self.minimumConnectionCount = config.pool.minimumConnectionCount
         self.maximumConnectionSoftLimit = config.pool.maximumConnectionSoftLimit
         self.maximumConnectionHardLimit = config.pool.maximumConnectionHardLimit

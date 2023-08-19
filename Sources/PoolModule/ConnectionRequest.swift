@@ -1,4 +1,3 @@
-import NIOCore
 
 @available(macOS 14, *)
 public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequestProtocol {
@@ -10,17 +9,13 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
 
     public var id: ID
 
-    public var deadline: NIOCore.NIODeadline?
-
     private var reportingMechanism: AsyncReportingMechanism
 
     init(
         id: Int,
-        deadline: NIOCore.NIODeadline,
         continuation: CheckedContinuation<Connection, Error>
     ) {
         self.id = id
-        self.deadline = deadline
         self.reportingMechanism = .continuation(continuation)
     }
 
@@ -82,7 +77,6 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Connection, Error>) in
                 let request = Request(
                     id: requestID,
-                    deadline: .now() + .seconds(10),
                     continuation: continuation
                 )
 
