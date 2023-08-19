@@ -74,44 +74,48 @@ final class MockConnection: PooledConnection, @unchecked Sendable {
     }
 }
 
-final class MockConnectionFactory: ConnectionFactory {
-    typealias ConnectionIDGenerator = ConnectionIDGenerator
-
+@available(macOS 14.0, *)
+final class MockConnectionFactory<Clock: _Concurrency.Clock>: ConnectionFactory where Clock.Duration == Duration {
+    typealias ConnectionIDGenerator = ConnectionPoolModule.ConnectionIDGenerator
     typealias Request = ConnectionRequest<MockConnection>
-
     typealias KeepAliveBehavior = MockPingPongBehavior
-
     typealias MetricsDelegate = NoOpConnectionPoolMetrics<Int>
-
     typealias ConnectionID = Int
     typealias Connection = MockConnection
 
     let lock = _ConcurrencyHelpers.NIOLock()
-    var _attempts = Deque<(Int, EventLoop, EventLoopPromise<ConnectionAndMetadata<MockConnection>>)>()
+    var _attempts = Deque<(Int, CheckedContinuation<(MockConnection, UInt16), any Error>)>()
 
     func makeConnection(
         id: Int,
-        for pool: ConnectionPool<MockConnectionFactory, MockConnection, Int, ConnectionIDGenerator, ConnectionRequest<MockConnection>, Int, MockPingPongBehavior, NoOpConnectionPoolMetrics<Int>>) async throws -> ConnectionAndMetadata<MockConnection> {
-        let promise = eventLoop.makePromise(of: ConnectionAndMetadata<MockConnection>.self)
-        self.lock.withLock {
-            self._attempts.append((id, eventLoop, promise))
+        for pool: ConnectionPool<MockConnectionFactory, MockConnection, Int, ConnectionIDGenerator, ConnectionRequest<MockConnection>, Int, MockPingPongBehavior, NoOpConnectionPoolMetrics<Int>, Clock>
+    ) async throws -> ConnectionAndMetadata<MockConnection> {
+        try await withTaskCancellationHandler {
+            let result = try await withCheckedThrowingContinuation { (checkedContinuation: CheckedContinuation<(MockConnection, UInt16), any Error>) in
+                self.lock.withLock {
+                    self._attempts.append((id, checkedContinuation))
+                }
+            }
+
+            return .init(connection: result.0, maximalStreamsOnConnection: result.1)
+        } onCancel: {
+            
         }
-        return promise.futureResult
     }
 
     @discardableResult
-    func succeedNextAttempt() -> MockConnection? {
-        guard let (id, eventLoop, promise) = self.lock.withLock({ self._attempts.popFirst() }) else {
+    func succeedNextAttempt(maxStreams: UInt16 = 1) -> MockConnection? {
+        guard let (id, checkedContinuation) = self.lock.withLock({ self._attempts.popFirst() }) else {
             return nil
         }
 
         let connection = MockConnection(id: id)
-        defer { promise.succeed(.init(connection: connection, maximalStreamsOnConnection: 1)) }
+        defer { checkedContinuation.resume(returning: (connection, maxStreams)) }
         return connection
     }
 
     func failNextAttempt() {
-
+        fatalError("TODO: Implement")
     }
 }
 
