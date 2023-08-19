@@ -2,13 +2,14 @@
 import XCTest
 import NIOEmbedded
 
+@available(macOS 14.0, *)
 final class ConnectionPoolTests: XCTestCase {
 
     func testHappyPath() {
         let eventLoop = EmbeddedEventLoop()
         let factory = MockConnectionFactory()
 
-        var config = ConnectionPoolConfiguration()
+        var config = ConnectionPoolConfiguration(coreCount: 1)
         config.minimumConnectionCount = 1
 
         let pool = ConnectionPool(
@@ -39,7 +40,6 @@ final class ConnectionPoolTests: XCTestCase {
             }
         }
     }
-
 }
 
 

@@ -4,6 +4,20 @@ import Atomics
 extension PoolStateMachine {
 
     @usableFromInline
+    struct KeepAliveAction {
+        @usableFromInline
+        var connection: Connection
+        @usableFromInline
+        var keepAliveTimerCancellationContinuation: CheckedContinuation<Void, Never>?
+
+        @inlinable
+        init(connection: Connection, keepAliveTimerCancellationContinuation: CheckedContinuation<Void, Never>? = nil) {
+            self.connection = connection
+            self.keepAliveTimerCancellationContinuation = keepAliveTimerCancellationContinuation
+        }
+    }
+
+    @usableFromInline
     struct ConnectionTimer: Equatable {
         @usableFromInline
         enum Usecase: Equatable {
@@ -26,6 +40,20 @@ extension PoolStateMachine {
             self.timerID = timerID
             self.connectionID = connectionID
             self.usecase = usecase
+        }
+
+        @inlinable
+        init(_ other: Timer) {
+            self.timerID = other.timerID
+            self.connectionID = other.connectionID
+            switch other.usecase {
+            case .backoff:
+                self.usecase = .backoff
+            case .keepAlive:
+                self.usecase = .keepAlive
+            case .idleTimeout:
+                self.usecase = .idleTimeout
+            }
         }
     }
 
@@ -315,20 +343,6 @@ extension PoolStateMachine {
                 }
             case .backingOff, .starting, .idle, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
-            }
-        }
-
-        @usableFromInline
-        struct KeepAliveAction {
-            @usableFromInline
-            var connection: Connection
-            @usableFromInline
-            var keepAliveTimerCancellationContinuation: CheckedContinuation<Void, Never>?
-
-            @inlinable
-            init(connection: Connection, keepAliveTimerCancellationContinuation: CheckedContinuation<Void, Never>? = nil) {
-                self.connection = connection
-                self.keepAliveTimerCancellationContinuation = keepAliveTimerCancellationContinuation
             }
         }
 
@@ -780,6 +794,7 @@ extension PoolStateMachine {
             return .none
         }
 
+        @inlinable
         mutating func timerScheduled(
             _ timer: ConnectionTimer,
             cancelContinuation: CheckedContinuation<Void, Never>
@@ -876,7 +891,7 @@ extension PoolStateMachine {
         }
 
         @inlinable
-        mutating func keepAliveIfIdle(_ connectionID: Connection.ID) -> Connection? {
+        mutating func keepAliveIfIdle(_ connectionID: Connection.ID) -> KeepAliveAction? {
             guard let index = self.connections.firstIndex(where: { $0.id == connectionID }) else {
                 // because of a race this connection (connection close runs against trigger of ping pong)
                 // was already removed from the state machine.
@@ -892,9 +907,7 @@ extension PoolStateMachine {
                 self.stats.availableStreams -= 1
             }
 
-            fatalError()
-
-//            return connection
+            return connection
         }
 
         @inlinable

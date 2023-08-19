@@ -59,5 +59,13 @@ extension PoolStateMachine {
                 }
             }
         }
+
+        @inlinable
+        func map<NewElement>(_ transform: (Element) throws -> (NewElement)) rethrows -> Max2Sequence<NewElement> {
+            try Max2Sequence<NewElement>(first: self.first.flatMap(transform), second: self.second.flatMap(transform))
+        }
     }
 }
+
+@available(macOS 14.0, *)
+extension PoolStateMachine.Max2Sequence: Equatable where Element: Equatable {}

@@ -5,6 +5,7 @@ import Glibc
 #endif
 
 @usableFromInline
+@available(macOS 14.0, *)
 struct PoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
@@ -22,7 +23,10 @@ struct PoolConfiguration {
     var maximumConnectionHardLimit: Int = 10
 
     @usableFromInline
-    var keepAlive: Bool = false
+    var keepAliveDuration: Duration?
+
+    @usableFromInline
+    var idleTimeoutDuration: Duration
 }
 
 @usableFromInline
@@ -82,10 +86,9 @@ struct PoolStateMachine<
             }
         }
 
-        case scheduleTimer(Timer)
-
+        case scheduleTimers(Max2Sequence<Timer>)
         case makeConnection(ConnectionRequest)
-        case runKeepAlive(Connection)
+        case runKeepAlive(Connection, CheckedContinuation<Void, Never>?)
         case closeConnection(Connection)
         case shutdown(Shutdown)
 
@@ -94,11 +97,11 @@ struct PoolStateMachine<
         @usableFromInline
         static func ==(lhs: Self, rhs: Self) -> Bool {
             switch (lhs, rhs) {
-            case (.scheduleTimer(let lhs), .scheduleTimer(let rhs)):
+            case (.scheduleTimers(let lhs), .scheduleTimers(let rhs)):
                 return lhs == rhs
             case (.makeConnection(let lhs), .makeConnection(let rhs)):
                 return lhs == rhs
-            case (.runKeepAlive(let lhs), .runKeepAlive(let rhs)):
+            case (.runKeepAlive(let lhs, _), .runKeepAlive(let rhs, _)):
                 return lhs === rhs
             case (.closeConnection(let lhsConn), .closeConnection(let rhsConn)):
                 return lhsConn === rhsConn
@@ -181,6 +184,14 @@ struct PoolStateMachine<
 
         @usableFromInline
         var usecase: Usecase
+
+        @inlinable
+        init(connectionID: ConnectionID, timerID: Int, duration: Duration, usecase: Usecase) {
+            self.connectionID = connectionID
+            self.timerID = timerID
+            self.duration = duration
+            self.usecase = usecase
+        }
     }
 
     @usableFromInline let configuration: PoolConfiguration
@@ -329,20 +340,19 @@ struct PoolStateMachine<
 
     @inlinable
     mutating func timerScheduled(_ timer: Timer, cancelContinuation: CheckedContinuation<Void, Never>) -> CheckedContinuation<Void, Never>? {
-        fatalError()
+        self.connections.timerScheduled(.init(timer), cancelContinuation: cancelContinuation)
     }
 
     @inlinable
     mutating func timerTriggered(_ timer: Timer) -> Action {
-        fatalError()
-//        switch timer.usecase {
-//        case .backoff:
-//            return self.connectionCreationBackoffDone(timer.connectionID)
-//        case .keepAlive:
-//            return self.connectionKeepAliveTimerTriggered(timer.connectionID)
-//        case .idle:
-//            return self.connectionIdleTimerTriggered(timer.connectionID)
-//        }
+        switch timer.usecase {
+        case .backoff:
+            return self.connectionCreationBackoffDone(timer.connectionID)
+        case .keepAlive:
+            return self.connectionKeepAliveTimerTriggered(timer.connectionID)
+        case .idleTimeout:
+            return self.connectionIdleTimerTriggered(timer.connectionID)
+        }
     }
 
     @inlinable
@@ -373,18 +383,18 @@ struct PoolStateMachine<
 
     @inlinable
     mutating func connectionKeepAliveTimerTriggered(_ connectionID: ConnectionID) -> Action {
-        precondition(self.configuration.keepAlive)
+        precondition(self.configuration.keepAliveDuration != nil)
         precondition(self.requestQueue.isEmpty)
 
-        guard let connection = self.connections.keepAliveIfIdle(connectionID) else {
+        guard let keepAliveAction = self.connections.keepAliveIfIdle(connectionID) else {
             return .none()
         }
-        return .init(request: .none, connection: .runKeepAlive(connection))
+        return .init(request: .none, connection: .runKeepAlive(keepAliveAction.connection, keepAliveAction.keepAliveTimerCancellationContinuation))
     }
 
     @inlinable
     mutating func connectionKeepAliveDone(_ connection: Connection) -> Action {
-        precondition(self.configuration.keepAlive)
+        precondition(self.configuration.keepAliveDuration != nil)
         guard let (index, context) = self.connections.keepAliveSucceeded(connection.id) else {
             return .none()
         }
@@ -468,20 +478,6 @@ struct PoolStateMachine<
             )
         }
 
-        func makeIdleConnectionAction(for connectionID: ConnectionID, scheduleTimeout: Bool) -> ConnectionAction {
-            fatalError()
-//            switch (scheduleTimeout, self.configuration.keepAlive) {
-//            case (false, false):
-//                return .none
-//            case (true, false):
-//                return .scheduleIdleTimeoutTimer(connectionID)
-//            case (false, true):
-//                return .scheduleKeepAliveTimer(connectionID)
-//            case (true, true):
-//                return .scheduleKeepAliveAndIdleTimeoutTimer(connectionID)
-//            }
-        }
-
         switch (availableContext.use, availableContext.info) {
         case (.persisted, .idle):
             fatalError()
@@ -497,17 +493,16 @@ struct PoolStateMachine<
                 preconditionFailure()
             }
 
-            let connectionID = self.connections.parkConnection(
+            let timersToSchedule = self.connections.parkConnection(
                 at: index,
-                scheduleKeepAliveTimer: self.configuration.keepAlive,
+                scheduleKeepAliveTimer: self.configuration.keepAliveDuration != nil,
                 scheduleIdleTimeoutTimer: newIdle
             )
-            fatalError()
 
-//            return .init(
-//                request: .none,
-//                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: newIdle)
-//            )
+            return .init(
+                request: .none,
+                connection: .scheduleTimers(timersToSchedule.map(self.mapTimers))
+            )
 
         case (.overflow, .idle):
             fatalError()
@@ -516,6 +511,33 @@ struct PoolStateMachine<
 
         case (_, .leased):
             return .none()
+        }
+    }
+
+    @inlinable
+    func mapTimers(_ connectionTimer: ConnectionTimer) -> Timer {
+        switch connectionTimer.usecase {
+        case .backoff:
+            return Timer(
+                connectionID: connectionTimer.connectionID,
+                timerID: connectionTimer.timerID,
+                duration: Self.calculateBackoff(failedAttempt: self.failedConsecutiveConnectionAttempts),
+                usecase: .backoff
+            )
+        case .keepAlive:
+            return Timer(
+                connectionID: connectionTimer.connectionID,
+                timerID: connectionTimer.timerID,
+                duration: self.configuration.keepAliveDuration!,
+                usecase: .keepAlive
+            )
+        case .idleTimeout:
+            return Timer(
+                connectionID: connectionTimer.connectionID,
+                timerID: connectionTimer.timerID,
+                duration: self.configuration.idleTimeoutDuration,
+                usecase: .idleTimeout
+            )
         }
     }
 }

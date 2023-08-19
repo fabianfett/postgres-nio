@@ -272,8 +272,8 @@ extension PostgresConnection: PooledConnection {
         self.close(promise: nil)
     }
 
-    public func onClose(_ closure: @escaping () -> ()) {
-        self.closeFuture.whenComplete { _ in closure() }
+    public func onClose(_ closure: @escaping ((any Error)?) -> ()) {
+        self.closeFuture.whenComplete { _ in closure(nil) }
     }
 }
 

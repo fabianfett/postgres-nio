@@ -67,7 +67,7 @@ public protocol PooledConnection: AnyObject, Sendable {
 
     var id: ID { get }
 
-    func onClose(_ closure: @escaping @Sendable () -> ())
+    func onClose(_ closure: @escaping @Sendable ((any Error)?) -> ())
 
     func close()
 }
@@ -218,15 +218,14 @@ public final class ConnectionPool<
         }
     }
 
-    /// Mark a connection as going away. Connection implementors have to call this method if there connection
+    /// Mark a connection as going away. Connection implementors have to call this method if the connection
     /// has received a close intent from the server. For example: an HTTP/2 GOWAY frame.
     public func connectionWillClose(_ connection: Connection) {
 
     }
 
-    public func connectionDidClose(_ connection: Connection) {
-        // TODO: Can we get access to a potential connection error here?
-        self.metricsDelegate.connectionClosed(id: connection.id, error: nil)
+    public func connectionDidClose(_ connection: Connection, error: (any Error)?) {
+        self.metricsDelegate.connectionClosed(id: connection.id, error: error)
 
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.connectionClosed(connection)
@@ -246,6 +245,8 @@ public final class ConnectionPool<
             let actions = self.stateLock.withLock {
                 self._stateMachine.triggerForceShutdown()
             }
+
+            self.runStateMachineActions(actions)
         }
     }
 
@@ -302,11 +303,14 @@ public final class ConnectionPool<
         case .makeConnection(let request):
             self.eventContinuation.yield(.makeConnection(request))
 
-        case .runKeepAlive(let connection):
+        case .runKeepAlive(let connection, let cancelContinuation):
+            cancelContinuation?.resume(returning: ())
             self.eventContinuation.yield(.runKeepAlive(connection))
 
-        case .scheduleTimer(let timer):
-            self.eventContinuation.yield(.scheduleTimer(timer))
+        case .scheduleTimers(let timers):
+            for timer in timers {
+                self.eventContinuation.yield(.scheduleTimer(timer))
+            }
 
         case .closeConnection(let connection):
             self.closeConnection(connection)
@@ -348,7 +352,7 @@ public final class ConnectionPool<
                 let bundle = try await self.factory.makeConnection(id: request.connectionID, for: self)
                 self.connectionEstablished(bundle)
                 bundle.connection.onClose {
-                    self.connectionDidClose(bundle.connection)
+                    self.connectionDidClose(bundle.connection, error: $0)
                 }
             } catch {
                 self.connectionEstablishFailed(error, for: request)
@@ -447,9 +451,11 @@ public final class ConnectionPool<
                 case .timerCancelled:
                     fatalError()
                 case .timerTriggered:
-                    self.stateLock.withLock {
+                    let action = self.stateLock.withLock {
                         self._stateMachine.timerTriggered(timer)
                     }
+
+                    self.runStateMachineActions(action)
                 }
 
                 return
@@ -464,6 +470,7 @@ extension PoolConfiguration {
         self.minimumConnectionCount = configuration.minimumConnectionCount
         self.maximumConnectionSoftLimit = configuration.maximumConnectionSoftLimit
         self.maximumConnectionHardLimit = configuration.maximumConnectionHardLimit
-        self.keepAlive = keepAliveBehavior.keepAliveFrequency != nil
+        self.keepAliveDuration = keepAliveBehavior.keepAliveFrequency
+        self.idleTimeoutDuration = configuration.idleTimeout
     }
 }
