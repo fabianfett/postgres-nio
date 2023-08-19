@@ -19,12 +19,10 @@ enum Server {
         clientConfig.pool.keepAliveFrequency = .seconds(5)
         clientConfig.pool.connectionIdleTimeout = .seconds(15)
 
-        clientConfig.server.host = "postgres-nio-tests.vsl"
-        clientConfig.authentication.username = "postgres"
-        clientConfig.authentication.database = "postgres"
-        clientConfig.authentication.password = "password"
-
-        mlogger.info("Lets go")
+        clientConfig.server.host = "localhost"
+        clientConfig.authentication.username = "test_username"
+        clientConfig.authentication.database = "test_database"
+        clientConfig.authentication.password = "test_password"
 
         let client = try PostgresClient(
             configuration: clientConfig,
@@ -33,13 +31,18 @@ enum Server {
         )
 
         await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<2 {
+            group.addTask {
+                logger.info("Lets go")
+                await client.run()
+            }
+
+            for i in 0..<2 {
                 group.addTask {
                     do {
                         try await client.withConnection(logger: logger) { connection in
-                            let rows = try await connection.query("SELECT 1", logger: logger)
-                            for try await row in rows {
-    //                            logger.info("Row received")
+                            let rows = try await connection.query("SELECT \(i)", logger: logger)
+                            for try await row in rows.decode(Int.self) {
+                                logger.info("Row received: \(row)")
                             }
                         }
                     } catch {
