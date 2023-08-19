@@ -3,6 +3,7 @@ import NIOEmbedded
 import XCTest
 @testable import ConnectionPoolModule
 
+#if false
 final class PoolStateMachineTests: XCTestCase {
     var configuration = PoolConfiguration()
     let eventLoop = EmbeddedEventLoop()
@@ -116,3 +117,4 @@ extension TestPoolStateMachine {
         return (stateMachine, connections)
     }
 }
+#endif

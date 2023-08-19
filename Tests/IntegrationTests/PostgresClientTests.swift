@@ -4,6 +4,7 @@ import NIOPosix
 import Logging
 @preconcurrency import Atomics
 
+@available(macOS 14.0, *)
 final class PostgresClientTests: XCTestCase {
 
     func testGetConnection() async throws {
@@ -32,6 +33,7 @@ final class PostgresClientTests: XCTestCase {
     }
 }
 
+@available(macOS 14.0, *)
 extension PostgresClient.Configuration {
     static func makeTestConfiguration() -> PostgresClient.Configuration {
         var clientConfig = PostgresClient.Configuration()
