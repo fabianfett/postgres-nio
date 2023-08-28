@@ -9,11 +9,11 @@ extension PoolStateMachine {
 
         @inlinable
         static func empty() -> Self {
-            Self.init(first: nil, second: nil)
+            Self.init(nil, nil)
         }
 
         @inlinable
-        init(first: Element?, second: Element?) {
+        init(_ first: Element?, _ second: Element? = nil) {
             if let first = first {
                 self.first = first
                 self.second = second
@@ -62,7 +62,7 @@ extension PoolStateMachine {
 
         @inlinable
         func map<NewElement>(_ transform: (Element) throws -> (NewElement)) rethrows -> Max2Sequence<NewElement> {
-            try Max2Sequence<NewElement>(first: self.first.flatMap(transform), second: self.second.flatMap(transform))
+            try Max2Sequence<NewElement>(self.first.flatMap(transform), self.second.flatMap(transform))
         }
     }
 }

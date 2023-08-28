@@ -87,7 +87,7 @@ struct PoolStateMachine<
         }
 
         case scheduleTimers(Max2Sequence<Timer>)
-        case makeConnection(ConnectionRequest)
+        case makeConnection(ConnectionRequest, CheckedContinuation<Void, Never>?)
         case runKeepAlive(Connection, CheckedContinuation<Void, Never>?)
         case closeConnection(Connection)
         case shutdown(Shutdown)
@@ -99,7 +99,7 @@ struct PoolStateMachine<
             switch (lhs, rhs) {
             case (.scheduleTimers(let lhs), .scheduleTimers(let rhs)):
                 return lhs == rhs
-            case (.makeConnection(let lhs), .makeConnection(let rhs)):
+            case (.makeConnection(let lhs, _), .makeConnection(let rhs, _)):
                 return lhs == rhs
             case (.runKeepAlive(let lhs, _), .runKeepAlive(let rhs, _)):
                 return lhs === rhs
@@ -305,7 +305,7 @@ struct PoolStateMachine<
         if let request = self.connections.createNewDemandConnectionIfPossible() {
             return .init(
                 request: requestAction,
-                connection: .makeConnection(request)
+                connection: .makeConnection(request, nil)
             )
         }
 
@@ -357,12 +357,17 @@ struct PoolStateMachine<
 
     @inlinable
     mutating func connectionEstablishFailed(_ error: Error, for request: ConnectionRequest) -> Action {
-        fatalError()
-//        self.failedConsecutiveConnectionAttempts += 1
-//
-//        self.connections.backoffNextConnectionAttempt(request.connectionID)
-//        let backoff = Self.calculateBackoff(failedAttempt: self.failedConsecutiveConnectionAttempts)
-//        return .init(request: .none, connection: .scheduleBackoffTimer(request.connectionID, backoff: backoff))
+        self.failedConsecutiveConnectionAttempts += 1
+
+        let connectionTimer = self.connections.backoffNextConnectionAttempt(request.connectionID)
+        let backoff = Self.calculateBackoff(failedAttempt: self.failedConsecutiveConnectionAttempts)
+        let timer = Timer(
+            connectionID: connectionTimer.connectionID,
+            timerID: connectionTimer.timerID,
+            duration: backoff,
+            usecase: .backoff
+        )
+        return .init(request: .none, connection: .scheduleTimers(.init(timer)))
     }
 
     @inlinable
@@ -371,8 +376,8 @@ struct PoolStateMachine<
         let retry = (soonAvailable - 1) < self.requestQueue.count
 
         switch self.connections.backoffDone(connectionID, retry: retry) {
-        case .createConnection(let request):
-            return .init(request: .none, connection: .makeConnection(request))
+        case .createConnection(let request, let continuation):
+            return .init(request: .none, connection: .makeConnection(request, continuation))
         case .cancelIdleTimeoutTimer(let connectionID):
             fatalError()
 //            return .init(request: .none, connection: .cancelIdleTimeoutTimer(connectionID))

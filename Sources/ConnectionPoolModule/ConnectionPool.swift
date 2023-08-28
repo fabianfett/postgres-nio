@@ -301,7 +301,8 @@ public final class ConnectionPool<
     @inlinable
     /*private*/ func runConnectionAction(_ action: StateMachine.ConnectionAction) {
         switch action {
-        case .makeConnection(let request):
+        case .makeConnection(let request, let continuation):
+            continuation?.resume()
             self.eventContinuation.yield(.makeConnection(request))
 
         case .runKeepAlive(let connection, let cancelContinuation):

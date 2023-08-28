@@ -237,7 +237,7 @@ extension PoolStateMachine {
                     idleTimer = ConnectionTimer(timerID: idleTimerState!.timerID, connectionID: self.id, usecase: .keepAlive)
                 }
                 self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(keepAliveTimerState), idleTimer: idleTimerState)
-                return .init(first: keepAliveTimer, second: idleTimer)
+                return .init(keepAliveTimer, idleTimer)
 
             case .idle(_, _, .notRunning(.some), .some):
                 precondition(!scheduleKeepAliveTimer)
@@ -252,7 +252,7 @@ extension PoolStateMachine {
                     keepAliveTimer = ConnectionTimer(timerID: keepAliveTimerState!.timerID, connectionID: self.id, usecase: .keepAlive)
                 }
                 self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(keepAliveTimerState), idleTimer: idleTimer)
-                return .init(first: keepAliveTimer, second: nil)
+                return .init(keepAliveTimer)
 
             case .idle(let connection, let maxStreams, .notRunning(.some), .none):
                 precondition(!scheduleKeepAliveTimer)
@@ -262,7 +262,7 @@ extension PoolStateMachine {
                     idleTimer = ConnectionTimer(timerID: idleTimerState!.timerID, connectionID: self.id, usecase: .keepAlive)
                 }
                 self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(keepAliveTimerState), idleTimer: idleTimerState)
-                return .init(first: keepAliveTimer, second: idleTimer)
+                return .init(keepAliveTimer, idleTimer)
 
             case .idle(let connection, let maxStreams, keepAlive: .running(let usingStream), idleTimer: .none):
                 if scheduleIdleTimeoutTimer {
@@ -270,7 +270,7 @@ extension PoolStateMachine {
                     idleTimer = ConnectionTimer(timerID: idleTimerState!.timerID, connectionID: self.id, usecase: .keepAlive)
                 }
                 self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .running(usingStream), idleTimer: idleTimerState)
-                return .init(first: keepAliveTimer, second: idleTimer)
+                return .init(keepAliveTimer, idleTimer)
 
             case .idle(_, _, keepAlive: .running(_), idleTimer: .some):
                 precondition(!scheduleKeepAliveTimer)
@@ -300,10 +300,11 @@ extension PoolStateMachine {
         }
 
         @usableFromInline
-        mutating func retryConnect() {
+        mutating func retryConnect() -> CheckedContinuation<Void, Never>? {
             switch self.state {
-            case .backingOff:
+            case .backingOff(let timer):
                 self.state = .starting
+                return timer.cancellationContinuation
             case .starting, .idle, .leased, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
             }
@@ -461,8 +462,8 @@ extension PoolStateMachine {
                 return CloseAction(
                     connection: connection,
                     cancelTimers: Max2Sequence(
-                        first: keepAlive.timerCancellationContinuation,
-                        second: idleTimerState?.cancellationContinuation
+                        keepAlive.timerCancellationContinuation,
+                        idleTimerState?.cancellationContinuation
                     ),
                     maxStreams: maxStreams
                 )
@@ -767,8 +768,8 @@ extension PoolStateMachine {
         }
 
         @usableFromInline
-        enum BackoffDoneAction: Equatable {
-            case createConnection(ConnectionRequest)
+        enum BackoffDoneAction {
+            case createConnection(ConnectionRequest, CheckedContinuation<Void, Never>?)
             case cancelIdleTimeoutTimer(ConnectionID)
             case none
         }
@@ -783,8 +784,8 @@ extension PoolStateMachine {
 
             if retry || self.stats.active < self.minimumConcurrentConnections {
                 self.stats.connecting += 1
-                self.connections[index].retryConnect()
-                return .createConnection(.init(connectionID: connectionID))
+                let continuation = self.connections[index].retryConnect()
+                return .createConnection(.init(connectionID: connectionID), continuation)
             }
 
             if let connectionID = self.swapForDeletion(index: index) {

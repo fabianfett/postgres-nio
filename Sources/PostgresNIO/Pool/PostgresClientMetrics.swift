@@ -21,7 +21,7 @@ final class PostgresClientMetrics: ConnectionPoolMetricsDelegate {
     func connectFailed(id: ConnectionID, error: Error) {
         self.logger.debug("Connection creation failed", metadata: [
             .connectionID: "\(id)",
-            .error: "\(error)"
+            .error: "\(String(reflecting: error))"
         ])
     }
 
