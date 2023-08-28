@@ -6,7 +6,6 @@ import NIOEmbedded
 final class ConnectionPoolTests: XCTestCase {
 
     func testHappyPath() async {
-        let eventLoop = EmbeddedEventLoop()
         let factory = MockConnectionFactory<ContinuousClock>()
 
         var config = ConnectionPoolConfiguration(coreCount: 1)

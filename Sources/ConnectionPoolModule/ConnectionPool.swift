@@ -63,7 +63,7 @@ public struct ConnectionPoolConfiguration {
 }
 
 public protocol PooledConnection: AnyObject, Sendable {
-    associatedtype ID: Hashable
+    associatedtype ID: Hashable & Sendable
 
     var id: ID { get }
 
@@ -73,12 +73,12 @@ public protocol PooledConnection: AnyObject, Sendable {
 }
 
 public protocol ConnectionIDGeneratorProtocol {
-    associatedtype ID: Hashable
+    associatedtype ID: Hashable & Sendable
 
     func next() -> ID
 }
 
-public protocol ConnectionRequestProtocol {
+public protocol ConnectionRequestProtocol: Sendable {
     associatedtype ID: Hashable
     associatedtype Connection: PooledConnection
 
@@ -312,11 +312,22 @@ public final class ConnectionPool<
                 self.eventContinuation.yield(.scheduleTimer(timer))
             }
 
+        case .cancelTimers(let continuations):
+            for continuation in continuations {
+                continuation.resume()
+            }
+
         case .closeConnection(let connection):
             self.closeConnection(connection)
 
-        case .shutdown(_):
-            fatalError()
+        case .shutdown(let cleanup):
+            for connection in cleanup.connections {
+                self.closeConnection(connection)
+            }
+
+            for timer in cleanup.timersToCancel {
+                timer.resume()
+            }
 
         case .none:
             break

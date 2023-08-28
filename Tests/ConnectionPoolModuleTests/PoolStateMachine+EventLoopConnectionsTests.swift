@@ -3,13 +3,6 @@ import XCTest
 
 #if false
 @available(macOS 14.0, *)
-typealias TestPoolStateMachine = PoolStateMachine<
-    TestConnection,
-    ConnectionIDGenerator,
-    TestConnection.ID,
-    TestRequest<TestConnection>,
-    TestRequest<TestConnection>.ID
->
 
 @available(macOS 14.0, *)
 final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
@@ -281,62 +274,4 @@ final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
     }
 }
 
-final class TestConnection: PooledConnection {
-    let id: Int
-
-    let eventLoop: EventLoop
-
-    init(id: Int, eventLoop: EventLoop) {
-        self.id = id
-        self.eventLoop = eventLoop
-    }
-
-    init(request: TestPoolStateMachine.ConnectionRequest) {
-        self.id = request.connectionID
-        self.eventLoop = request.eventLoop
-    }
-
-    func onClose(_ closure: @escaping @Sendable () -> ()) {
-        preconditionFailure()
-    }
-
-    func close() {
-        preconditionFailure()
-    }
-}
-
-final class TestRequest<Connection: PooledConnection>: ConnectionRequestProtocol, Equatable {
-    struct ID: Hashable {
-        var objectID: ObjectIdentifier
-
-        init(_ request: TestRequest) {
-            self.objectID = ObjectIdentifier(request)
-        }
-    }
-
-    var id: ID { ID(self) }
-
-    let deadline: NIODeadline
-
-    init(deadline: NIODeadline, connectionType: Connection.Type) {
-        self.deadline = deadline
-    }
-
-    static func ==(lhs: TestRequest, rhs: TestRequest) -> Bool {
-        lhs.id == rhs.id && lhs.deadline == rhs.deadline
-    }
-
-    func complete(with: Result<Connection, PoolError>) {
-
-    }
-}
-
-extension TestRequest where Connection == TestConnection {
-    convenience init(deadline: NIODeadline) {
-        self.init(
-            deadline: deadline,
-            connectionType: TestConnection.self
-        )
-    }
-}
 #endif

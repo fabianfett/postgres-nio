@@ -63,13 +63,14 @@ extension PoolStateMachine {
         enum State {
             @usableFromInline
             enum KeepAlive {
-                case notRunning(Timer?)
+                case notScheduled
+                case scheduled(Timer)
                 case running(_ consumingStream: Bool)
 
                 @usableFromInline
                 var usedStreams: UInt16 {
                     switch self {
-                    case .notRunning, .running(false):
+                    case .notScheduled, .scheduled, .running(false):
                         return 0
                     case .running(true):
                         return 1
@@ -81,7 +82,7 @@ extension PoolStateMachine {
                     switch self {
                     case .running:
                         return true
-                    case .notRunning:
+                    case .notScheduled, .scheduled:
                         return false
                     }
                 }
@@ -89,9 +90,9 @@ extension PoolStateMachine {
                 @usableFromInline
                 var timerCancellationContinuation: TimerCancellationToken? {
                     switch self {
-                    case .notRunning(let timer):
-                        return timer?.cancellationContinuation
-                    case .running:
+                    case .scheduled(let timer):
+                        return timer.cancellationContinuation
+                    case .running, .notScheduled:
                         return nil
                     }
                 }
@@ -152,7 +153,7 @@ extension PoolStateMachine {
         @inlinable
         var isIdle: Bool {
             switch self.state {
-            case .idle(_, _, .notRunning, _):
+            case .idle(_, _, .notScheduled, _), .idle(_, _, .scheduled, _):
                 return true
             case .idle(_, _, .running, _):
                 return false
@@ -209,7 +210,7 @@ extension PoolStateMachine {
         mutating func connected(_ connection: Connection, maxStreams: UInt16) -> ConnectionAvailableInfo {
             switch self.state {
             case .starting:
-                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(nil), idleTimer: nil)
+                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notScheduled, idleTimer: nil)
                 return .idle(availableStreams: maxStreams, newIdle: true)
             case .backingOff, .idle, .leased, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
@@ -227,42 +228,49 @@ extension PoolStateMachine {
             case .backingOff, .starting, .leased, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
 
-            case .idle(let connection, let maxStreams, .notRunning(.none), .none):
+            case .idle(let connection, let maxStreams, .notScheduled, .none):
+                let keepAlive: State.KeepAlive
                 if scheduleKeepAliveTimer {
                     keepAliveTimerState = self.nextTimer()
                     keepAliveTimer = ConnectionTimer(timerID: keepAliveTimerState!.timerID, connectionID: self.id, usecase: .keepAlive)
+                    keepAlive = .scheduled(keepAliveTimerState!)
+                } else {
+                    keepAlive = .notScheduled
                 }
                 if scheduleIdleTimeoutTimer {
                     idleTimerState = self.nextTimer()
                     idleTimer = ConnectionTimer(timerID: idleTimerState!.timerID, connectionID: self.id, usecase: .keepAlive)
                 }
-                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(keepAliveTimerState), idleTimer: idleTimerState)
+                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: keepAlive, idleTimer: idleTimerState)
                 return .init(keepAliveTimer, idleTimer)
 
-            case .idle(_, _, .notRunning(.some), .some):
+            case .idle(_, _, .scheduled, .some):
                 precondition(!scheduleKeepAliveTimer)
                 precondition(!scheduleIdleTimeoutTimer)
                 return .empty()
 
-            case .idle(let connection, let maxStreams, .notRunning(.none), let idleTimer):
+            case .idle(let connection, let maxStreams, .notScheduled, let idleTimer):
                 precondition(!scheduleIdleTimeoutTimer)
-
+                let keepAlive: State.KeepAlive
                 if scheduleKeepAliveTimer {
                     keepAliveTimerState = self.nextTimer()
                     keepAliveTimer = ConnectionTimer(timerID: keepAliveTimerState!.timerID, connectionID: self.id, usecase: .keepAlive)
+                    keepAlive = .scheduled(keepAliveTimerState!)
+                } else {
+                    keepAlive = .notScheduled
                 }
-                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(keepAliveTimerState), idleTimer: idleTimer)
+                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: keepAlive, idleTimer: idleTimer)
                 return .init(keepAliveTimer)
 
-            case .idle(let connection, let maxStreams, .notRunning(.some), .none):
+            case .idle(let connection, let maxStreams, .scheduled(let keepAliveTimer), .none):
                 precondition(!scheduleKeepAliveTimer)
 
                 if scheduleIdleTimeoutTimer {
                     idleTimerState = self.nextTimer()
                     idleTimer = ConnectionTimer(timerID: idleTimerState!.timerID, connectionID: self.id, usecase: .keepAlive)
                 }
-                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(keepAliveTimerState), idleTimer: idleTimerState)
-                return .init(keepAliveTimer, idleTimer)
+                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .scheduled(keepAliveTimer), idleTimer: idleTimerState)
+                return .init(idleTimer, nil)
 
             case .idle(let connection, let maxStreams, keepAlive: .running(let usingStream), idleTimer: .none):
                 if scheduleIdleTimeoutTimer {
@@ -310,18 +318,42 @@ extension PoolStateMachine {
             }
         }
 
+        @usableFromInline
+        struct LeaseAction {
+            @usableFromInline
+            var connection: Connection
+            @usableFromInline
+            var timersToCancel: Max2Sequence<TimerCancellationToken>
+            @usableFromInline
+            var wasIdle: Bool
+
+            @inlinable
+            init(connection: Connection, timersToCancel: Max2Sequence<TimerCancellationToken>, wasIdle: Bool) {
+                self.connection = connection
+                self.timersToCancel = timersToCancel
+                self.wasIdle = wasIdle
+            }
+        }
+
         @inlinable
-        mutating func lease(streams newLeasedStreams: UInt16 = 1) -> (Connection, wasIdle: Bool) {
+        mutating func lease(streams newLeasedStreams: UInt16 = 1) -> LeaseAction {
             switch self.state {
-            case .idle(let connection, let maxStreams, let keepAlive, _):
+            case .idle(let connection, let maxStreams, let keepAlive, let idleTimer):
+                var cancel = Max2Sequence<TimerCancellationToken>()
+                if let token = idleTimer?.cancellationContinuation {
+                    cancel.append(token)
+                }
+                if let token = keepAlive.timerCancellationContinuation {
+                    cancel.append(token)
+                }
                 precondition(maxStreams >= newLeasedStreams + keepAlive.usedStreams, "Invalid state: \(self.state)")
                 self.state = .leased(connection, usedStreams: newLeasedStreams, maxStreams: maxStreams, keepAlive: keepAlive)
-                return (connection, wasIdle: true)
+                return LeaseAction(connection: connection, timersToCancel: cancel, wasIdle: true)
 
             case .leased(let connection, let usedStreams, let maxStreams, let keepAlive):
                 precondition(maxStreams >= usedStreams + newLeasedStreams + keepAlive.usedStreams, "Invalid state: \(self.state)")
                 self.state = .leased(connection, usedStreams: usedStreams + newLeasedStreams, maxStreams: maxStreams, keepAlive: keepAlive)
-                return (connection, wasIdle: false)
+                return LeaseAction(connection: connection, timersToCancel: .init(), wasIdle: false)
 
             case .backingOff, .starting, .closing, .closed:
                 preconditionFailure("Invalid state: \(self.state)")
@@ -350,17 +382,17 @@ extension PoolStateMachine {
         @inlinable
         mutating func runKeepAliveIfIdle(reducesAvailableStreams: Bool) -> KeepAliveAction? {
             switch self.state {
-            case .idle(let connection, let maxStreams, .notRunning(let timer), let idleTimer):
+            case .idle(let connection, let maxStreams, .scheduled(let timer), let idleTimer):
                 self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .running(reducesAvailableStreams), idleTimer: idleTimer)
                 return KeepAliveAction(
                     connection: connection,
-                    keepAliveTimerCancellationContinuation: timer?.cancellationContinuation
+                    keepAliveTimerCancellationContinuation: timer.cancellationContinuation
                 )
 
             case .leased, .closed, .closing:
                 return nil
 
-            case .backingOff, .starting, .idle(_, _, .running, _):
+            case .backingOff, .starting, .idle(_, _, .running, _), .idle(_, _, .notScheduled, _):
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -369,17 +401,21 @@ extension PoolStateMachine {
         mutating func keepAliveSucceeded() -> ConnectionAvailableInfo? {
             switch self.state {
             case .idle(let connection, let maxStreams, .running, let idleTimer):
-                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(nil), idleTimer: idleTimer)
+                self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notScheduled, idleTimer: idleTimer)
                 return .idle(availableStreams: maxStreams, newIdle: false)
 
             case .leased(let connection, let usedStreams, let maxStreams, .running):
-                self.state = .leased(connection, usedStreams: usedStreams, maxStreams: maxStreams, keepAlive: .notRunning(nil))
+                self.state = .leased(connection, usedStreams: usedStreams, maxStreams: maxStreams, keepAlive: .notScheduled)
                 return .leased(availableStreams: maxStreams - usedStreams)
 
             case .closed, .closing:
                 return nil
 
-            case .backingOff, .starting, .leased(_, _, _, .notRunning), .idle(_, _, .notRunning, _):
+            case .backingOff, .starting,
+                 .leased(_, _, _, .notScheduled),
+                 .leased(_, _, _, .scheduled),
+                 .idle(_, _, .notScheduled, _),
+                 .idle(_, _, .scheduled, _):
                 preconditionFailure("Invalid state: \(self.state)")
             }
         }
@@ -422,16 +458,18 @@ extension PoolStateMachine {
 
             case .keepAlive:
                 switch self.state {
-                case .idle(let connection, let maxStreams, .notRunning(let keepAliveTimerState), let idleTimerState):
-                    if var keepAliveTimerState = keepAliveTimerState, keepAliveTimerState.timerID == timer.timerID {
+                case .idle(let connection, let maxStreams, .scheduled(var keepAliveTimerState), let idleTimerState):
+                    if keepAliveTimerState.timerID == timer.timerID {
                         keepAliveTimerState.registerCancellationContinuation(cancelContinuation)
-                        self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .notRunning(keepAliveTimerState), idleTimer: idleTimerState)
+                        self.state = .idle(connection, maxStreams: maxStreams, keepAlive: .scheduled(keepAliveTimerState), idleTimer: idleTimerState)
                         return nil
                     } else {
                         return cancelContinuation
                     }
 
-                case .starting, .backingOff, .leased, .closing, .closed, .idle(_, _, .running(_), _):
+                case .starting, .backingOff, .leased, .closing, .closed, 
+                     .idle(_, _, .running, _),
+                     .idle(_, _, .notScheduled, _):
                     return cancelContinuation
                 }
             }
@@ -497,28 +535,65 @@ extension PoolStateMachine {
             }
         }
 
-//        enum ShutdownAction {
-//            case none
-//            case close(Connection, wasIdle: Bool)
-//            case cancelBackoff(ConnectionID)
-//        }
-//
-//        mutating func shutdown() -> ShutdownAction {
-//            switch self.state {
-//            case .starting, .closing:
-//                return .none
-//            case .backingOff:
-//                return .cancelBackoff(self.id)
-//            case .idle(let connection, maxStreams: _, keepAlive: _):
-//                self.state = .closing(connection)
-//                return .close(connection, wasIdle: true)
-//            case .leased(let connection, usedStreams: _, maxStreams: _, keepAlive: _):
-//                self.state = .closing(connection)
-//                return .close(connection, wasIdle: false)
-//            case .closed:
-//                preconditionFailure("Invalid state: \(self.state)")
-//            }
-//        }
+        @usableFromInline
+        struct ShutdownAction {
+            @usableFromInline
+            var connection: Connection?
+            @usableFromInline
+            var timersToCancel: Max2Sequence<TimerCancellationToken>
+            @usableFromInline
+            var maxStreams: UInt16
+            @usableFromInline
+            var usedStreams: UInt16
+
+            @inlinable
+            init(
+                connection: Connection? = nil,
+                timersToCancel: Max2Sequence<TimerCancellationToken> = .init(),
+                maxStreams: UInt16 = 0,
+                usedStreams: UInt16 = 0
+            ) {
+                self.connection = connection
+                self.timersToCancel = timersToCancel
+                self.maxStreams = maxStreams
+                self.usedStreams = usedStreams
+            }
+        }
+
+        mutating func shutdown() -> ShutdownAction {
+            switch self.state {
+            case .starting, .closing:
+                return .init()
+
+            case .backingOff(let timer):
+                return .init(connection: nil, timersToCancel: .init(timer.cancellationContinuation))
+
+            case .idle(let connection, let maxStreams, let keepAlive, let idleTimer):
+                var timers = Max2Sequence<TimerCancellationToken>()
+                if let idleTimerToken = idleTimer?.cancellationContinuation {
+                    timers.append(idleTimerToken)
+                }
+                if let keepAliveToken = keepAlive.timerCancellationContinuation {
+                    timers.append(keepAliveToken)
+                }
+                self.state = .closing(connection)
+                #warning("Should we add keep alive used streams here")
+                return .init(connection: connection, timersToCancel: timers, maxStreams: maxStreams, usedStreams: 0)
+
+            case .leased(let connection, let usedStreams, let maxStreams, let keepAlive):
+                self.state = .closing(connection)
+                #warning("Should we add keep alive used streams here")
+                return .init(
+                    connection: connection,
+                    timersToCancel: .init(keepAlive.timerCancellationContinuation),
+                    maxStreams: maxStreams,
+                    usedStreams: usedStreams
+                )
+
+            case .closed:
+                preconditionFailure("Invalid state: \(self.state)")
+            }
+        }
 //
 //        enum StateBeforeClose {
 //            case idle(maxStreams: UInt16, runningKeepAlive: Bool)
@@ -566,16 +641,27 @@ extension PoolStateMachine {
     }
 
     @usableFromInline
-    struct ConnectionLeasedInfo: Equatable {
+    struct LeaseResult {
         @usableFromInline
-        var use: EventLoopConnections.ConnectionUse
+        var connection: Connection
+        @usableFromInline
+        var timersToCancel: Max2Sequence<TimerCancellationToken>
         @usableFromInline
         var wasIdle: Bool
-
         @usableFromInline
-        init(use: EventLoopConnections.ConnectionUse, wasIdle: Bool) {
-            self.use = use
+        var use: EventLoopConnections.ConnectionUse
+
+        @inlinable
+        init(
+            connection: Connection,
+            timersToCancel: Max2Sequence<TimerCancellationToken>,
+            wasIdle: Bool,
+            use: EventLoopConnections.ConnectionUse
+        ) {
+            self.connection = connection
+            self.timersToCancel = timersToCancel
             self.wasIdle = wasIdle
+            self.use = use
         }
     }
 
@@ -686,16 +772,20 @@ extension PoolStateMachine {
             var connectionsStarting: Int
         }
 
-        mutating func refillConnections(_ requests: inout [ConnectionRequest]) {
+        mutating func refillConnections() -> [ConnectionRequest] {
             let existingConnections = self.stats.active
             let missingConnection = self.minimumConcurrentConnections - Int(existingConnections)
             guard missingConnection > 0 else {
-                return
+                return []
             }
+
+            var requests = [ConnectionRequest]()
+            requests.reserveCapacity(missingConnection)
 
             for _ in 0..<missingConnection {
                 requests.append(self.createNewConnection())
             }
+            return requests
         }
 
         // MARK: Connection creation
@@ -813,7 +903,7 @@ extension PoolStateMachine {
         ///
         /// - Returns: A connection to execute a request on.
         @inlinable
-        mutating func leaseConnection() -> (Connection, ConnectionLeasedInfo)? {
+        mutating func leaseConnection() -> LeaseResult? {
             if self.stats.availableStreams == 0 {
                 return nil
             }
@@ -822,36 +912,40 @@ extension PoolStateMachine {
                 preconditionFailure("Stats and actual count are of.")
             }
 
-            let use = self.getConnectionUse(index: index)
-            let (connection, wasIdle) = self.leaseConnection(at: index, streams: 1)
-            return (connection, .init(use: use, wasIdle: wasIdle))
+            return self.leaseConnection(at: index, streams: 1)
         }
 
         @usableFromInline
         enum LeasedConnectionOrStartingCount {
-            case leasedConnection(Connection, ConnectionLeasedInfo)
+            case leasedConnection(LeaseResult)
             case startingCount(UInt16)
         }
 
         @inlinable
         mutating func leaseConnectionOrSoonAvailableConnectionCount() -> LeasedConnectionOrStartingCount {
-            if let (connection, info) = self.leaseConnection() {
-                return .leasedConnection(connection, info)
+            if let result = self.leaseConnection() {
+                return .leasedConnection(result)
             }
             return .startingCount(self.stats.soonAvailable)
         }
 
         @inlinable
-        mutating func leaseConnection(at index: Int, streams: UInt16) -> (Connection, wasIdle: Bool) {
-            let (connection, wasIdle) = self.connections[index].lease(streams: streams)
+        mutating func leaseConnection(at index: Int, streams: UInt16) -> LeaseResult {
+            let leaseResult = self.connections[index].lease(streams: streams)
+            let use = self.getConnectionUse(index: index)
 
-            if wasIdle {
+            if leaseResult.wasIdle {
                 self.stats.idle -= 1
                 self.stats.leased += 1
             }
             self.stats.leasedStreams += streams
             self.stats.availableStreams -= streams
-            return (connection, wasIdle)
+            return LeaseResult(
+                connection: leaseResult.connection,
+                timersToCancel: leaseResult.timersToCancel,
+                wasIdle: leaseResult.wasIdle,
+                use: use
+            )
         }
 
         @inlinable
@@ -1029,26 +1123,16 @@ extension PoolStateMachine {
 
         // MARK: Shutdown
 
-        mutating func shutdown(_ cleanup: inout ConnectionAction.Shutdown) {
-            self.connections = self.connections.enumerated().compactMap { index, connectionState in
-                var connectionState = connectionState
-                fatalError()
-//                switch connectionState.shutdown() {
-//                case .cancelBackoff(let connectionID):
-//                    cleanup.backoffTimersToCancel.append(connectionID)
-//                    return nil
-//
-//                case .close(let connection, let wasIdle):
-//                    let cancelIdleTimer = index >= self.minimumConcurrentConnections
-//                    cleanup.connections.append(
-//                        .init(cancelIdleTimer: cancelIdleTimer, cancelKeepAliveTimer: wasIdle, connection: connection)
-//                    )
-//                    return connectionState
-//
-//                case .none:
-//                    return connectionState
-//                }
+        mutating func triggerShutdown(_ cleanup: inout ConnectionAction.Shutdown) {
+            for var connectionState in self.connections {
+                let connectionCleanup = connectionState.shutdown()
+                if let connection = connectionCleanup.connection {
+                    cleanup.connections.append(connection)
+                }
+                cleanup.timersToCancel.append(contentsOf: connectionCleanup.timersToCancel)
             }
+
+            self.connections = []
         }
 
         // MARK: - Private functions -

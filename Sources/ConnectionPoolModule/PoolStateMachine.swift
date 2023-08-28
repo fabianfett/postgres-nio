@@ -26,7 +26,7 @@ struct PoolConfiguration {
     var keepAliveDuration: Duration?
 
     @usableFromInline
-    var idleTimeoutDuration: Duration
+    var idleTimeoutDuration: Duration = .seconds(30)
 }
 
 @usableFromInline
@@ -34,7 +34,7 @@ struct PoolConfiguration {
 struct PoolStateMachine<
     Connection: PooledConnection,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
-    ConnectionID,
+    ConnectionID: Hashable & Sendable,
     Request: ConnectionRequestProtocol,
     RequestID,
     TimerCancellationToken
@@ -58,38 +58,32 @@ struct PoolStateMachine<
     @usableFromInline
     enum ConnectionAction: Equatable {
         @usableFromInline
-        struct Shutdown: Equatable {
-            @usableFromInline
-            struct ConnectionToClose: Equatable {
-                @usableFromInline var cancelIdleTimer: Bool
-                @usableFromInline var cancelKeepAliveTimer: Bool
-                @usableFromInline var connection: Connection
+        struct Shutdown {
+            @usableFromInline 
+            var connections: [Connection]
+            @usableFromInline 
+            var timersToCancel: [TimerCancellationToken]
 
-                @inlinable
-                init(cancelIdleTimer: Bool, cancelKeepAliveTimer: Bool, connection: Connection) {
-                    self.cancelIdleTimer = cancelIdleTimer
-                    self.cancelKeepAliveTimer = cancelKeepAliveTimer
-                    self.connection = connection
-                }
-
-                @inlinable
-                static func ==(lhs: Self, rhs: Self) -> Bool {
-                    lhs.cancelIdleTimer == rhs.cancelIdleTimer && lhs.cancelKeepAliveTimer == rhs.cancelKeepAliveTimer && lhs.connection === rhs.connection
-                }
-            }
-
-            @usableFromInline var connections: [ConnectionToClose]
-            @usableFromInline var backoffTimersToCancel: [ConnectionID]
-
+            @inlinable
             init() {
                 self.connections = []
-                self.backoffTimersToCancel = []
+                self.timersToCancel = []
+            }
+
+            static func ==(lhs: Self, rhs: Self) -> Bool {
+                guard lhs.connections.elementsEqual(rhs.connections, by: { $0 === $1 }) else {
+                    return false
+                }
+
+                #warning("Currently not comparing TimerCancellationTokens")
+                return true
             }
         }
 
         case scheduleTimers(Max2Sequence<Timer>)
         case makeConnection(ConnectionRequest, TimerCancellationToken?)
         case runKeepAlive(Connection, TimerCancellationToken?)
+        case cancelTimers(Max2Sequence<TimerCancellationToken>)
         case closeConnection(Connection)
         case shutdown(Shutdown)
 
@@ -166,9 +160,9 @@ struct PoolStateMachine<
     }
 
     @usableFromInline
-    struct Timer: Equatable {
+    struct Timer: Hashable, Sendable {
         @usableFromInline
-        enum Usecase {
+        enum Usecase: Sendable {
             case backoff
             case idleTimeout
             case keepAlive
@@ -229,34 +223,11 @@ struct PoolStateMachine<
     }
 
     mutating func refillConnections() -> [ConnectionRequest] {
-        var request = [ConnectionRequest]()
-        request.reserveCapacity(self.configuration.minimumConnectionCount)
-
-        self.connections.refillConnections(&request)
-
-        return request
+        return self.connections.refillConnections()
     }
 
     @inlinable
     mutating func leaseConnection(_ request: Request) -> Action {
-        func connectionActionForLease(_ connectionID: ConnectionID, info: ConnectionLeasedInfo) -> ConnectionAction {
-            fatalError()
-//            switch (self.configuration.keepAlive, info.use, info.wasIdle) {
-//            case (_, .demand, false), (_, .persisted, false):
-//                return .none
-//            case (true, .demand, true):
-//                return .cancelKeepAliveAndIdleTimeoutTimer(connectionID)
-//            case (false, .demand, true):
-//                return .cancelIdleTimeoutTimer(connectionID)
-//            case (true, .persisted, true):
-//                return .cancelKeepAliveTimer(connectionID)
-//            case (false, .persisted, true):
-//                return .none
-//            case (_, .overflow, _):
-//                preconditionFailure("Overflow connections should never be available on fast turn around")
-//            }
-        }
-
         switch self.poolState {
         case .running:
             break
@@ -277,10 +248,10 @@ struct PoolStateMachine<
 
         // check if any other EL has an idle connection
         switch self.connections.leaseConnectionOrSoonAvailableConnectionCount() {
-        case .leasedConnection(let connection, let info):
+        case .leasedConnection(let leaseResult):
             return .init(
-                request: .leaseConnection(.init(request), connection),
-                connection: connectionActionForLease(connection.id, info: info)
+                request: .leaseConnection(.init(request), leaseResult.connection),
+                connection: .cancelTimers(leaseResult.timersToCancel)
             )
 
         case .startingCount(let count):
@@ -447,7 +418,7 @@ struct PoolStateMachine<
         case .running:
             self.poolState = .shuttingDown(graceful: false)
             var shutdown = ConnectionAction.Shutdown()
-            self.connections.shutdown(&shutdown)
+            self.connections.triggerShutdown(&shutdown)
             
             return .init(
                 request: .failRequests(self.requestQueue.removeAll(), PoolError.poolShutdown),
@@ -478,24 +449,47 @@ struct PoolStateMachine<
             }
         }
         if !requests.isEmpty {
-            let (connection, _) = self.connections.leaseConnection(at: index, streams: UInt16(requests.count))
+            let leaseResult = self.connections.leaseConnection(at: index, streams: UInt16(requests.count))
             return .init(
-                request: .leaseConnection(requests, connection),
-                connection: .none
+                request: .leaseConnection(requests, leaseResult.connection),
+                connection: .cancelTimers(leaseResult.timersToCancel)
             )
         }
 
         switch (availableContext.use, availableContext.info) {
         case (.persisted, .idle):
-            fatalError()
-//            let connectionID = self.connections.parkConnection(at: index)
-//            return .init(
-//                request: .none,
-//                connection: makeIdleConnectionAction(for: connectionID, scheduleTimeout: false)
-//            )
+            let timers = self.connections.parkConnection(
+                at: index,
+                scheduleKeepAliveTimer: self.configuration.keepAliveDuration != nil,
+                scheduleIdleTimeoutTimer: false
+            )
+            let mapped = timers.map {
+                switch $0.usecase {
+                case .backoff:
+                    preconditionFailure()
+                case .idleTimeout:
+                    return Timer(
+                        connectionID: $0.connectionID,
+                        timerID: $0.timerID,
+                        duration: self.configuration.idleTimeoutDuration,
+                        usecase: .idleTimeout
+                    )
+                case .keepAlive:
+                    return Timer(
+                        connectionID: $0.connectionID,
+                        timerID: $0.timerID,
+                        duration: self.configuration.keepAliveDuration!,
+                        usecase: .keepAlive
+                    )
+                }
+            }
+
+            return .init(
+                request: .none,
+                connection: .scheduleTimers(mapped)
+            )
 
         case (.demand, .idle):
-
             guard case .idle(availableStreams: _, let newIdle) = availableContext.info else {
                 preconditionFailure()
             }

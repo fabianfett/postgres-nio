@@ -3,9 +3,17 @@ extension PoolStateMachine {
     @usableFromInline
     struct Max2Sequence<Element>: Sequence {
         @usableFromInline
-        let first: Element?
+        /*private*/ var first: Element?
         @usableFromInline
-        let second: Element?
+        /*private*/ var second: Element?
+
+        @inlinable
+        var count: Int {
+            var count = 0
+            if self.first != nil { count += 1 }
+            if self.second != nil { count += 1 }
+            return count
+        }
 
         @inlinable
         static func empty() -> Self {
@@ -21,6 +29,12 @@ extension PoolStateMachine {
                 self.first = second
                 self.second = nil
             }
+        }
+
+        @inlinable
+        init() {
+            self.first = nil
+            self.second = nil
         }
 
         @inlinable
@@ -57,6 +71,16 @@ extension PoolStateMachine {
                 default:
                     return nil
                 }
+            }
+        }
+
+        @inlinable
+        mutating func append(_ element: Element) {
+            precondition(self.second == nil)
+            if self.first == nil {
+                self.first = element
+            } else {
+                self.second = element
             }
         }
 
