@@ -36,7 +36,8 @@ struct PoolStateMachine<
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
     ConnectionID,
     Request: ConnectionRequestProtocol,
-    RequestID
+    RequestID,
+    TimerCancellationToken
 > where Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, RequestID == Request.ID {
 
     @usableFromInline
@@ -87,8 +88,8 @@ struct PoolStateMachine<
         }
 
         case scheduleTimers(Max2Sequence<Timer>)
-        case makeConnection(ConnectionRequest, CheckedContinuation<Void, Never>?)
-        case runKeepAlive(Connection, CheckedContinuation<Void, Never>?)
+        case makeConnection(ConnectionRequest, TimerCancellationToken?)
+        case runKeepAlive(Connection, TimerCancellationToken?)
         case closeConnection(Connection)
         case shutdown(Shutdown)
 
@@ -212,7 +213,8 @@ struct PoolStateMachine<
     @inlinable
     init(
         configuration: PoolConfiguration,
-        generator: ConnectionIDGenerator
+        generator: ConnectionIDGenerator,
+        timerCancellationTokenType: TimerCancellationToken.Type
     ) {
         self.configuration = configuration
         self.generator = generator
@@ -339,7 +341,7 @@ struct PoolStateMachine<
     }
 
     @inlinable
-    mutating func timerScheduled(_ timer: Timer, cancelContinuation: CheckedContinuation<Void, Never>) -> CheckedContinuation<Void, Never>? {
+    mutating func timerScheduled(_ timer: Timer, cancelContinuation: TimerCancellationToken) -> TimerCancellationToken? {
         self.connections.timerScheduled(.init(timer), cancelContinuation: cancelContinuation)
     }
 

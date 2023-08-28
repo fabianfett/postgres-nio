@@ -115,7 +115,7 @@ public final class ConnectionPool<
     Clock.Duration == Duration
 {
     @usableFromInline
-    typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID>
+    typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID, CheckedContinuation<Void, Never>>
 
     @usableFromInline
     let factory: Factory
@@ -160,7 +160,8 @@ public final class ConnectionPool<
         self.configuration = configuration
         self._stateMachine = PoolStateMachine(
             configuration: .init(configuration, keepAliveBehavior: keepAliveBehavior),
-            generator: idGenerator
+            generator: idGenerator,
+            timerCancellationTokenType: CheckedContinuation<Void, Never>.self
         )
 
         let (stream, continuation) = AsyncStream.makeStream(of: NewPoolActions.self)

@@ -8,10 +8,10 @@ extension PoolStateMachine {
         @usableFromInline
         var connection: Connection
         @usableFromInline
-        var keepAliveTimerCancellationContinuation: CheckedContinuation<Void, Never>?
+        var keepAliveTimerCancellationContinuation: TimerCancellationToken?
 
         @inlinable
-        init(connection: Connection, keepAliveTimerCancellationContinuation: CheckedContinuation<Void, Never>? = nil) {
+        init(connection: Connection, keepAliveTimerCancellationContinuation: TimerCancellationToken? = nil) {
             self.connection = connection
             self.keepAliveTimerCancellationContinuation = keepAliveTimerCancellationContinuation
         }
@@ -87,7 +87,7 @@ extension PoolStateMachine {
                 }
 
                 @usableFromInline
-                var timerCancellationContinuation: CheckedContinuation<Void, Never>? {
+                var timerCancellationContinuation: TimerCancellationToken? {
                     switch self {
                     case .notRunning(let timer):
                         return timer?.cancellationContinuation
@@ -103,7 +103,7 @@ extension PoolStateMachine {
                 let timerID: Int
 
                 @usableFromInline
-                private(set) var cancellationContinuation: CheckedContinuation<Void, Never>?
+                private(set) var cancellationContinuation: TimerCancellationToken?
 
                 @inlinable
                 init(id: Int) {
@@ -112,7 +112,7 @@ extension PoolStateMachine {
                 }
 
                 @inlinable
-                mutating func registerCancellationContinuation(_ continuation: CheckedContinuation<Void, Never>) {
+                mutating func registerCancellationContinuation(_ continuation: TimerCancellationToken) {
                     precondition(self.cancellationContinuation == nil)
                     self.cancellationContinuation = continuation
                 }
@@ -300,7 +300,7 @@ extension PoolStateMachine {
         }
 
         @usableFromInline
-        mutating func retryConnect() -> CheckedContinuation<Void, Never>? {
+        mutating func retryConnect() -> TimerCancellationToken? {
             switch self.state {
             case .backingOff(let timer):
                 self.state = .starting
@@ -387,8 +387,8 @@ extension PoolStateMachine {
         @inlinable
         mutating func timerScheduled(
             _ timer: ConnectionTimer,
-            cancelContinuation: CheckedContinuation<Void, Never>
-        ) -> CheckedContinuation<Void, Never>? {
+            cancelContinuation: TimerCancellationToken
+        ) -> TimerCancellationToken? {
             switch timer.usecase {
             case .backoff:
                 switch self.state {
@@ -442,12 +442,12 @@ extension PoolStateMachine {
             @usableFromInline
             var connection: Connection
             @usableFromInline
-            var cancelTimers: Max2Sequence<CheckedContinuation<Void, Never>>
+            var cancelTimers: Max2Sequence<TimerCancellationToken>
             @usableFromInline
             var maxStreams: UInt16
 
             @inlinable
-            init(connection: Connection, cancelTimers: Max2Sequence<CheckedContinuation<Void, Never>>, maxStreams: UInt16) {
+            init(connection: Connection, cancelTimers: Max2Sequence<TimerCancellationToken>, maxStreams: UInt16) {
                 self.connection = connection
                 self.cancelTimers = cancelTimers
                 self.maxStreams = maxStreams
@@ -769,7 +769,7 @@ extension PoolStateMachine {
 
         @usableFromInline
         enum BackoffDoneAction {
-            case createConnection(ConnectionRequest, CheckedContinuation<Void, Never>?)
+            case createConnection(ConnectionRequest, TimerCancellationToken?)
             case cancelIdleTimeoutTimer(ConnectionID)
             case none
         }
@@ -798,8 +798,8 @@ extension PoolStateMachine {
         @inlinable
         mutating func timerScheduled(
             _ timer: ConnectionTimer,
-            cancelContinuation: CheckedContinuation<Void, Never>
-        ) -> CheckedContinuation<Void, Never>? {
+            cancelContinuation: TimerCancellationToken
+        ) -> TimerCancellationToken? {
             guard let index = self.connections.firstIndex(where: { $0.id == timer.connectionID }) else {
                 return cancelContinuation
             }
