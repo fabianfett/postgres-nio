@@ -1,4 +1,4 @@
-@available(macOS 14, *)
+@available(macOS 13.0, *)
 extension PoolStateMachine {
     @usableFromInline
     struct Max2Sequence<Element>: Sequence {
@@ -67,5 +67,5 @@ extension PoolStateMachine {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, *)
 extension PoolStateMachine.Max2Sequence: Equatable where Element: Equatable {}

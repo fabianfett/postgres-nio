@@ -1,6 +1,6 @@
 import Atomics
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, *)
 extension PoolStateMachine {
 
     @usableFromInline

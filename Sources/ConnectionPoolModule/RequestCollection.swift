@@ -1,5 +1,4 @@
 @usableFromInline
-@available(macOS 14.0, *)
 struct RequestCollection<Element: ConnectionRequestProtocol>: Sequence {
     @usableFromInline
     enum Base {

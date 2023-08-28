@@ -5,7 +5,7 @@ import Glibc
 #endif
 
 @usableFromInline
-@available(macOS 14.0, *)
+@available(macOS 13.0, *)
 struct PoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
@@ -30,7 +30,7 @@ struct PoolConfiguration {
 }
 
 @usableFromInline
-@available(macOS 14.0, *)
+@available(macOS 13.0, *)
 struct PoolStateMachine<
     Connection: PooledConnection,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
@@ -547,7 +547,7 @@ struct PoolStateMachine<
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, *)
 extension PoolStateMachine {
     /// Calculates the delay for the next connection attempt after the given number of failed `attempts`.
     ///

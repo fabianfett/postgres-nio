@@ -62,7 +62,6 @@ public struct ConnectionPoolConfiguration {
     }
 }
 
-@available(macOS 14.0, *)
 public protocol PooledConnection: AnyObject, Sendable {
     associatedtype ID: Hashable
 
@@ -73,14 +72,12 @@ public protocol PooledConnection: AnyObject, Sendable {
     func close()
 }
 
-@available(macOS 14.0, *)
 public protocol ConnectionIDGeneratorProtocol {
     associatedtype ID: Hashable
 
     func next() -> ID
 }
 
-@available(macOS 14.0, *)
 public protocol ConnectionRequestProtocol {
     associatedtype ID: Hashable
     associatedtype Connection: PooledConnection
