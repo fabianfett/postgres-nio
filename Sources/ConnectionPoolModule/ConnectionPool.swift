@@ -485,3 +485,17 @@ extension PoolConfiguration {
         self.idleTimeoutDuration = configuration.idleTimeout
     }
 }
+
+#if swift(<5.9)
+// This should be removed once we support Swift 5.9+ only
+extension AsyncStream {
+    static func makeStream(
+        of elementType: Element.Type = Element.self,
+        bufferingPolicy limit: Continuation.BufferingPolicy = .unbounded
+    ) -> (stream: AsyncStream<Element>, continuation: AsyncStream<Element>.Continuation) {
+        var continuation: AsyncStream<Element>.Continuation!
+        let stream = AsyncStream<Element>(bufferingPolicy: limit) { continuation = $0 }
+        return (stream: stream, continuation: continuation!)
+    }
+}
+#endif
