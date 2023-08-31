@@ -7,7 +7,7 @@ import Logging
 enum Server {
     static func main() async throws {
         var mlogger = Logger(label: "psql")
-        mlogger.logLevel = .debug
+        mlogger.logLevel = .info
         let logger = mlogger
 
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 4)
@@ -30,13 +30,15 @@ enum Server {
             backgroundLogger: logger
         )
 
+        let iterations = 1000
+
         await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 logger.info("Lets go")
                 await client.run()
             }
 
-            for i in 0..<2 {
+            for i in 0..<iterations {
                 group.addTask {
                     do {
                         try await client.withConnection(logger: logger) { connection in
@@ -50,10 +52,15 @@ enum Server {
                     }
                 }
             }
+
+            var counter = 0
+            while let _ = await group.nextResult() {
+                counter += 1
+
+                if counter == iterations {
+                    group.cancelAll()
+                }
+            }
         }
-
-//        try await ContinuousClock().sleep(until: .now + .seconds(120))
-
-//        try await client.shutdown(graceful: false)
     }
 }

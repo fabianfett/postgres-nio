@@ -2,7 +2,7 @@ import PostgresNIO
 import XCTest
 import NIOPosix
 import Logging
-@preconcurrency import Atomics
+import Atomics
 
 @available(macOS 14.0, *)
 final class PostgresClientTests: XCTestCase {
@@ -12,14 +12,15 @@ final class PostgresClientTests: XCTestCase {
         mlogger.logLevel = .debug
         let logger = mlogger
         let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 8)
-        defer { XCTAssertNoThrow(try eventLoopGroup.syncShutdownGracefully()) }
+        self.addTeardownBlock {
+            try await eventLoopGroup.shutdownGracefully()
+        }
 
-        var clientConfig = PostgresClient.Configuration.makeTestConfiguration()
+        let clientConfig = PostgresClient.Configuration.makeTestConfiguration()
 
         var maybeClient: PostgresClient?
         XCTAssertNoThrow(maybeClient = try PostgresClient(configuration: clientConfig, eventLoopGroup: eventLoopGroup, backgroundLogger: logger))
         guard let client = maybeClient else { return XCTFail("Expected to have a client here") }
-//        defer { XCTAssertNoThrow(try client.syncShutdown()) }
 
         for _ in 0..<10000 {
             await withThrowingTaskGroup(of: Void.self) { taskGroup in

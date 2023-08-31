@@ -119,14 +119,3 @@ final class MockConnectionFactory<Clock: _Concurrency.Clock>: ConnectionFactory 
     }
 }
 
-final class MockPingPongBehavior: ConnectionKeepAliveBehavior {
-    let keepAliveFrequency: Duration?
-
-    init(keepAliveFrequency: Duration?) {
-        self.keepAliveFrequency = keepAliveFrequency
-    }
-
-    func runKeepAlive(for connection: MockConnection) async throws {
-        preconditionFailure()
-    }
-}

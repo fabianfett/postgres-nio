@@ -459,14 +459,18 @@ public final class ConnectionPool<
                 switch await taskGroup.next()! {
                 case .cancellationContinuationFinished:
                     taskGroup.cancelAll()
-                case .timerCancelled:
-                    fatalError()
+
                 case .timerTriggered:
                     let action = self.stateLock.withLock {
                         self._stateMachine.timerTriggered(timer)
                     }
 
                     self.runStateMachineActions(action)
+
+                case .timerCancelled:
+                    // the only way to reach this, is if the state machine decided to cancel the 
+                    // timer. therefore we don't need to report it back!
+                    break
                 }
 
                 return
