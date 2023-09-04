@@ -2,7 +2,7 @@
 import XCTest
 import NIOEmbedded
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 final class ConnectionPoolTests: XCTestCase {
 
     func testHappyPath() async {

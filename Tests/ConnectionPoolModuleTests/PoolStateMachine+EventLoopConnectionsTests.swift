@@ -2,9 +2,7 @@ import XCTest
 @testable import ConnectionPoolModule
 
 #if false
-@available(macOS 14.0, *)
-
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 final class PoolStateMachine_EventLoopConnectionsTests: XCTestCase {
     var idGenerator: ConnectionIDGenerator!
 

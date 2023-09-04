@@ -133,3 +133,9 @@ struct RequestCollection<Element: ConnectionRequestProtocol>: Sequence {
         }
     }
 }
+
+extension RequestCollection: Equatable where Element: Equatable {}
+extension RequestCollection.Base: Equatable where Element: Equatable {}
+
+extension RequestCollection: Hashable where Element: Hashable {}
+extension RequestCollection.Base: Hashable where Element: Hashable {}

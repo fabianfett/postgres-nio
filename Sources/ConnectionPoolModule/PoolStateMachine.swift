@@ -5,7 +5,7 @@ import Glibc
 #endif
 
 @usableFromInline
-@available(macOS 13.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 struct PoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
@@ -30,7 +30,7 @@ struct PoolConfiguration {
 }
 
 @usableFromInline
-@available(macOS 13.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 struct PoolStateMachine<
     Connection: PooledConnection,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
@@ -41,7 +41,7 @@ struct PoolStateMachine<
 > where Connection.ID == ConnectionID, ConnectionIDGenerator.ID == ConnectionID, RequestID == Request.ID {
 
     @usableFromInline
-    struct Action: Equatable {
+    struct Action {
         @usableFromInline let request: RequestAction
         @usableFromInline let connection: ConnectionAction
 
@@ -56,7 +56,7 @@ struct PoolStateMachine<
     }
 
     @usableFromInline
-    enum ConnectionAction: Equatable {
+    enum ConnectionAction {
         @usableFromInline
         struct Shutdown {
             @usableFromInline 
@@ -69,15 +69,6 @@ struct PoolStateMachine<
                 self.connections = []
                 self.timersToCancel = []
             }
-
-            static func ==(lhs: Self, rhs: Self) -> Bool {
-                guard lhs.connections.elementsEqual(rhs.connections, by: { $0 === $1 }) else {
-                    return false
-                }
-
-                #warning("Currently not comparing TimerCancellationTokens")
-                return true
-            }
         }
 
         case scheduleTimers(Max2Sequence<Timer>)
@@ -88,58 +79,16 @@ struct PoolStateMachine<
         case shutdown(Shutdown)
 
         case none
-
-        @usableFromInline
-        static func ==(lhs: Self, rhs: Self) -> Bool {
-            switch (lhs, rhs) {
-            case (.scheduleTimers(let lhs), .scheduleTimers(let rhs)):
-                return lhs == rhs
-            case (.makeConnection(let lhs, _), .makeConnection(let rhs, _)):
-                return lhs == rhs
-            case (.runKeepAlive(let lhs, _), .runKeepAlive(let rhs, _)):
-                return lhs === rhs
-            case (.closeConnection(let lhsConn), .closeConnection(let rhsConn)):
-                return lhsConn === rhsConn
-            case (.shutdown(let lhs), .shutdown(let rhs)):
-                return lhs == rhs
-            case (.none, .none):
-                return true
-            default:
-                return false
-            }
-        }
     }
 
     @usableFromInline
-    enum RequestAction: Equatable {
+    enum RequestAction {
         case leaseConnection(RequestCollection<Request>, Connection)
 
         case failRequest(Request, PoolError)
         case failRequests(RequestCollection<Request>, PoolError)
 
         case none
-
-        @usableFromInline
-        static func ==(lhs: Self, rhs: Self) -> Bool {
-            switch (lhs, rhs) {
-            case (.leaseConnection(let lhsRequests, let lhsConn), .leaseConnection(let rhsRequests, let rhsConn)):
-                guard lhsRequests.count == rhsRequests.count else { return false }
-                var lhsIterator = lhsRequests.makeIterator()
-                var rhsIterator = rhsRequests.makeIterator()
-                while let lhsNext = lhsIterator.next(), let rhsNext = rhsIterator.next() {
-                    guard lhsNext.id == rhsNext.id else { return false }
-                }
-                return lhsConn === rhsConn
-            case (.failRequest(let lhsRequest, let lhsError), .failRequest(let rhsRequest, let rhsError)):
-                return lhsRequest.id == rhsRequest.id && lhsError == rhsError
-            case (.failRequests(let lhsRequests, let lhsError), .failRequests(let rhsRequests, let rhsError)):
-                return Set(lhsRequests.lazy.map(\.id)) == Set(rhsRequests.lazy.map(\.id)) && lhsError == rhsError
-            case (.none, .none):
-                return true
-            default:
-                return false
-            }
-        }
     }
 
     @usableFromInline
@@ -543,7 +492,7 @@ struct PoolStateMachine<
     }
 }
 
-@available(macOS 13.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 extension PoolStateMachine {
     /// Calculates the delay for the next connection attempt after the given number of failed `attempts`.
     ///
@@ -585,5 +534,70 @@ extension PoolStateMachine {
         let jitter: Duration = .nanoseconds((-jitterRange...jitterRange).randomElement()!)
         let jitteredBackoff = backoff + jitter
         return jitteredBackoff
+    }
+}
+
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
+extension PoolStateMachine.Action: Equatable where TimerCancellationToken: Equatable, Request: Equatable {}
+
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
+extension PoolStateMachine.ConnectionAction: Equatable where TimerCancellationToken: Equatable {
+    @usableFromInline
+    static func ==(lhs: Self, rhs: Self) -> Bool {
+        switch (lhs, rhs) {
+        case (.scheduleTimers(let lhs), .scheduleTimers(let rhs)):
+            return lhs == rhs
+        case (.makeConnection(let lhsRequest, let lhsToken), .makeConnection(let rhsRequest, let rhsToken)):
+            return lhsRequest == rhsRequest && lhsToken == rhsToken
+        case (.runKeepAlive(let lhsConn, let lhsToken), .runKeepAlive(let rhsConn, let rhsToken)):
+            return lhsConn === rhsConn && lhsToken == rhsToken
+        case (.closeConnection(let lhsConn), .closeConnection(let rhsConn)):
+            return lhsConn === rhsConn
+        case (.shutdown(let lhs), .shutdown(let rhs)):
+            return lhs == rhs
+        case (.none, .none):
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
+extension PoolStateMachine.ConnectionAction.Shutdown: Equatable where TimerCancellationToken: Equatable {
+    @usableFromInline
+    static func ==(lhs: Self, rhs: Self) -> Bool {
+        Set(lhs.connections.lazy.map(\.id)) == Set(rhs.connections.lazy.map(\.id)) && lhs.timersToCancel == rhs.timersToCancel
+    }
+}
+
+
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
+extension PoolStateMachine.RequestAction: Equatable where Request: Equatable {
+    
+    @usableFromInline
+    static func ==(lhs: Self, rhs: Self) -> Bool {
+        switch (lhs, rhs) {
+        case (.leaseConnection(let lhsRequests, let lhsConn), .leaseConnection(let rhsRequests, let rhsConn)):
+            guard lhsRequests.count == rhsRequests.count else { return false }
+            var lhsIterator = lhsRequests.makeIterator()
+            var rhsIterator = rhsRequests.makeIterator()
+            while let lhsNext = lhsIterator.next(), let rhsNext = rhsIterator.next() {
+                guard lhsNext.id == rhsNext.id else { return false }
+            }
+            return lhsConn === rhsConn
+
+        case (.failRequest(let lhsRequest, let lhsError), .failRequest(let rhsRequest, let rhsError)):
+            return lhsRequest.id == rhsRequest.id && lhsError == rhsError
+
+        case (.failRequests(let lhsRequests, let lhsError), .failRequests(let rhsRequests, let rhsError)):
+            return Set(lhsRequests.lazy.map(\.id)) == Set(rhsRequests.lazy.map(\.id)) && lhsError == rhsError
+
+        case (.none, .none):
+            return true
+
+        default:
+            return false
+        }
     }
 }

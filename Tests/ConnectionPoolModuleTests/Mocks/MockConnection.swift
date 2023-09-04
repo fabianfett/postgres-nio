@@ -74,7 +74,7 @@ final class MockConnection: PooledConnection, @unchecked Sendable {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 final class MockConnectionFactory<Clock: _Concurrency.Clock>: ConnectionFactory where Clock.Duration == Duration {
     typealias ConnectionIDGenerator = ConnectionPoolModule.ConnectionIDGenerator
     typealias Request = ConnectionRequest<MockConnection>

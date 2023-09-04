@@ -1,5 +1,4 @@
 
-@available(macOS 14, *)
 public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequestProtocol {
     private enum AsyncReportingMechanism {
         case continuation(CheckedContinuation<Connection, Error>)
@@ -45,7 +44,7 @@ public struct ConnectionRequest<Connection: PooledConnection>: ConnectionRequest
 
 fileprivate let requestIDGenerator = ConnectionPoolModule.ConnectionIDGenerator()
 
-@available(macOS 14, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 extension ConnectionPool where Request == ConnectionRequest<Connection> {
     public convenience init(
         configuration: ConnectionPoolConfiguration,

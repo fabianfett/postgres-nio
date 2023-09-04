@@ -3,7 +3,7 @@ import NIOSSL
 import Logging
 import ConnectionPoolModule
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public final class PostgresClient: Sendable {
 
     public struct Configuration: Sendable {
@@ -137,7 +137,6 @@ public final class PostgresClient: Sendable {
         )
     }
 
-    @available(macOS 14.0, *)
     public func query<Clock: _Concurrency.Clock>(
         _ query: PostgresQuery,
         deadline: Clock.Instant,
@@ -164,7 +163,7 @@ public final class PostgresClient: Sendable {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 struct PostgresConnectionFactory: ConnectionFactory {
     typealias ConnectionIDGenerator = ConnectionPoolModule.ConnectionIDGenerator
     typealias Request = ConnectionPoolModule.ConnectionRequest<PostgresConnection>
@@ -202,7 +201,7 @@ struct PostgresConnectionFactory: ConnectionFactory {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 struct PostgresKeepAliveBehavor: ConnectionKeepAliveBehavior {
     var keepAliveFrequency: Duration?
     var query: PostgresQuery
@@ -219,7 +218,7 @@ struct PostgresKeepAliveBehavor: ConnectionKeepAliveBehavior {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 extension PostgresKeepAliveBehavor {
     init(_ config: PostgresClient.Configuration, logger: Logger) {
         self = .init(keepAliveFrequency: config.pool.keepAliveFrequency, logger: logger)
@@ -227,7 +226,7 @@ extension PostgresKeepAliveBehavor {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 extension ConnectionPoolConfiguration {
     init(_ config: PostgresClient.Configuration) {
         self = .init(coreCount: System.coreCount)
@@ -238,7 +237,7 @@ extension ConnectionPoolConfiguration {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 extension PostgresConnection.Configuration {
     init(_ config: PostgresClient.Configuration) throws {
         try self.init(
@@ -252,7 +251,7 @@ extension PostgresConnection.Configuration {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 extension PostgresConnection.Configuration.TLS {
     // TODO: Make async
     init(_ config: PostgresClient.Configuration.TLS) throws {

@@ -1,6 +1,6 @@
 import _ConcurrencyHelpers
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public protocol ConnectionKeepAliveBehavior: Sendable {
     associatedtype Connection: PooledConnection
 
@@ -9,7 +9,7 @@ public protocol ConnectionKeepAliveBehavior: Sendable {
     func runKeepAlive(for connection: Connection) async throws
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public protocol ConnectionFactory {
     associatedtype Connection: PooledConnection
     associatedtype ConnectionID: Hashable where Connection.ID == ConnectionID
@@ -25,7 +25,7 @@ public protocol ConnectionFactory {
     ) async throws -> ConnectionAndMetadata<Connection>
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public struct ConnectionAndMetadata<Connection: PooledConnection> {
 
     public var connection: Connection
@@ -38,7 +38,7 @@ public struct ConnectionAndMetadata<Connection: PooledConnection> {
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public struct ConnectionPoolConfiguration {
     /// The minimum number of connections to preserve in the pool.
     ///
@@ -87,7 +87,7 @@ public protocol ConnectionRequestProtocol: Sendable {
     func complete(with: Result<Connection, PoolError>)
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public final class ConnectionPool<
     Factory: ConnectionFactory,
     Connection: PooledConnection,
@@ -237,7 +237,14 @@ public final class ConnectionPool<
 
     public func run() async {
         await withTaskCancellationHandler {
-            await withDiscardingTaskGroup() { taskGroup in
+            #if swift(>=5.9) || os(Linux) && swift(>=5.8)
+            if #available(macOS 14.0, iOS 17.0, tvOS 17.0, watchOS 10.0, *) {
+                return await withDiscardingTaskGroup() { taskGroup in
+                    await self.run(in: &taskGroup)
+                }
+            }
+            #endif
+            return await withTaskGroup(of: Void.self) { taskGroup in
                 await self.run(in: &taskGroup)
             }
         } onCancel: {
@@ -262,21 +269,39 @@ public final class ConnectionPool<
         case scheduleTimer(StateMachine.Timer)
     }
 
+    @available(macOS 14.0, iOS 17.0, tvOS 17.0, watchOS 10.0, *)
     private func run(in taskGroup: inout DiscardingTaskGroup) async {
         for await event in self.eventStream {
-            switch event {
-            case .makeConnection(let request):
-                self.makeConnection(for: request, in: &taskGroup)
+            self.runEvent(event, in: &taskGroup)
+        }
+    }
 
-            case .runKeepAlive(let connection):
-                self.runKeepAlive(connection, in: &taskGroup)
+    private func run(in taskGroup: inout TaskGroup<Void>) async {
+        var running = 0
+        for await event in self.eventStream {
+            running += 1
+            self.runEvent(event, in: &taskGroup)
 
-            case .closeConnection(let connection):
-                self.closeConnection(connection)
-
-            case .scheduleTimer(let timer):
-                self.runTimer(timer, in: &taskGroup)
+            if running == 100 {
+                _ = await taskGroup.next()
+                running -= 1
             }
+        }
+    }
+
+    private func runEvent(_ event: NewPoolActions, in taskGroup: inout some TaskGroupProtocol) {
+        switch event {
+        case .makeConnection(let request):
+            self.makeConnection(for: request, in: &taskGroup)
+
+        case .runKeepAlive(let connection):
+            self.runKeepAlive(connection, in: &taskGroup)
+
+        case .closeConnection(let connection):
+            self.closeConnection(connection)
+
+        case .scheduleTimer(let timer):
+            self.runTimer(timer, in: &taskGroup)
         }
     }
 
@@ -355,7 +380,7 @@ public final class ConnectionPool<
     }
 
     @inlinable
-    /*private*/ func makeConnection(for request: StateMachine.ConnectionRequest, in taskGroup: inout DiscardingTaskGroup) {
+    /*private*/ func makeConnection(for request: StateMachine.ConnectionRequest, in taskGroup: inout some TaskGroupProtocol) {
         taskGroup.addTask {
             self.metricsDelegate.startedConnecting(id: request.connectionID)
 
@@ -395,7 +420,7 @@ public final class ConnectionPool<
     }
 
     @inlinable
-    /*private*/ func runKeepAlive(_ connection: Connection, in taskGroup: inout DiscardingTaskGroup) {
+    /*private*/ func runKeepAlive(_ connection: Connection, in taskGroup: inout some TaskGroupProtocol) {
         self.metricsDelegate.keepAliveTriggered(id: connection.id)
 
         taskGroup.addTask {
@@ -432,8 +457,8 @@ public final class ConnectionPool<
     }
 
     @inlinable
-    /*private*/ func runTimer(_ timer: StateMachine.Timer, in poolGroup: inout DiscardingTaskGroup) {
-        poolGroup.addTask(priority: nil) { () async -> () in
+    /*private*/ func runTimer(_ timer: StateMachine.Timer, in poolGroup: inout some TaskGroupProtocol) {
+        poolGroup.addTask { () async -> () in
             await withTaskGroup(of: TimerRunResult.self, returning: Void.self) { taskGroup in
                 taskGroup.addTask {
                     do {
@@ -479,7 +504,7 @@ public final class ConnectionPool<
     }
 }
 
-@available(macOS 14.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 extension PoolConfiguration {
     init<KeepAliveBehavior: ConnectionKeepAliveBehavior>(_ configuration: ConnectionPoolConfiguration, keepAliveBehavior: KeepAliveBehavior) {
         self.minimumConnectionCount = configuration.minimumConnectionCount
@@ -503,3 +528,19 @@ extension AsyncStream {
     }
 }
 #endif
+
+@usableFromInline
+protocol TaskGroupProtocol {
+    mutating func addTask(operation: @escaping @Sendable () async -> Void)
+}
+
+@available(macOS 14.0, iOS 17.0, tvOS 17.0, watchOS 9.0, *)
+extension DiscardingTaskGroup: TaskGroupProtocol {}
+
+extension TaskGroup<Void>: TaskGroupProtocol {
+    @inlinable
+    mutating func addTask(operation: @escaping @Sendable () async -> Void) {
+        self.addTask(priority: nil, operation: operation)
+    }
+}
+
