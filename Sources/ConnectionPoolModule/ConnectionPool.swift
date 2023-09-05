@@ -211,7 +211,7 @@ public final class ConnectionPool<
         }
     }
 
-    public func cancelConnectionRequest(_ requestID: RequestID) {
+    public func cancelLeaseConnection(_ requestID: RequestID) {
         self.modifyStateAndRunActions { stateMachine in
             stateMachine.cancelRequest(id: requestID)
         }

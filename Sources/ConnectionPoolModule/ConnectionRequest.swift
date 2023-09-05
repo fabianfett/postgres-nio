@@ -82,7 +82,7 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
                 self.leaseConnection(request)
             }
         } onCancel: {
-            self.cancelConnectionRequest(requestID)
+            self.cancelLeaseConnection(requestID)
         }
 
         return connection
