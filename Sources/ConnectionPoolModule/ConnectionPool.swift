@@ -10,7 +10,7 @@ public protocol ConnectionKeepAliveBehavior: Sendable {
 }
 
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
-public protocol ConnectionFactory {
+public protocol ConnectionFactory: Sendable {
     associatedtype Connection: PooledConnection
     associatedtype ConnectionID: Hashable where Connection.ID == ConnectionID
     associatedtype ConnectionIDGenerator: ConnectionIDGeneratorProtocol where ConnectionIDGenerator.ID == ConnectionID
@@ -21,7 +21,7 @@ public protocol ConnectionFactory {
 
     func makeConnection(
         id: ConnectionID,
-        for pool: ConnectionPool<Self, Connection, ConnectionID, ConnectionIDGenerator, Request, Request.ID, KeepAliveBehavior, MetricsDelegate, Clock>
+        pool: ConnectionPool<Self, Connection, ConnectionID, ConnectionIDGenerator, Request, Request.ID, KeepAliveBehavior, MetricsDelegate, Clock>
     ) async throws -> ConnectionAndMetadata<Connection>
 }
 
@@ -72,7 +72,7 @@ public protocol PooledConnection: AnyObject, Sendable {
     func close()
 }
 
-public protocol ConnectionIDGeneratorProtocol {
+public protocol ConnectionIDGeneratorProtocol: Sendable {
     associatedtype ID: Hashable & Sendable
 
     func next() -> ID
@@ -91,10 +91,10 @@ public protocol ConnectionRequestProtocol: Sendable {
 public final class ConnectionPool<
     Factory: ConnectionFactory,
     Connection: PooledConnection,
-    ConnectionID: Hashable,
+    ConnectionID: Hashable & Sendable,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
     Request: ConnectionRequestProtocol,
-    RequestID: Hashable,
+    RequestID: Hashable & Sendable,
     KeepAliveBehavior: ConnectionKeepAliveBehavior,
     MetricsDelegate: ConnectionPoolMetricsDelegate,
     Clock: _Concurrency.Clock

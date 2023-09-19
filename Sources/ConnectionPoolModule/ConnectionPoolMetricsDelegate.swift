@@ -1,5 +1,5 @@
 
-public protocol ConnectionPoolMetricsDelegate {
+public protocol ConnectionPoolMetricsDelegate: Sendable {
     associatedtype ConnectionID: Hashable
 
     /// The connection with the given ID has started trying to establish a connection. The outcome
