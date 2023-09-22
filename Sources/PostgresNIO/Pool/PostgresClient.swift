@@ -112,7 +112,6 @@ public final class PostgresClient: Sendable {
     }
 
     typealias Pool = ConnectionPool<
-        PostgresConnectionFactory,
         PostgresConnection,
         PostgresConnection.ID,
         ConnectionIDGenerator,
@@ -126,15 +125,27 @@ public final class PostgresClient: Sendable {
     let pool: Pool
 
     public init(configuration: Configuration, eventLoopGroup: EventLoopGroup, backgroundLogger: Logger) throws {
-        self.pool = try ConnectionPool(
+        let connectionConfig = try PostgresConnection.Configuration(configuration)
+        self.pool = ConnectionPool(
             configuration: .init(configuration),
             idGenerator: ConnectionIDGenerator(),
-            factory: PostgresConnectionFactory(configuration: .init(configuration), eventLoopGroup: eventLoopGroup, logger: backgroundLogger),
             requestType: ConnectionRequest<PostgresConnection>.self,
             keepAliveBehavior: .init(configuration, logger: backgroundLogger),
             metricsDelegate: .init(logger: backgroundLogger),
             clock: ContinuousClock()
-        )
+        ) { (connectionID, pool) in
+            var connectionLogger = backgroundLogger
+            connectionLogger[postgresMetadataKey: .connectionID] = "\(connectionID)"
+
+            let connection = try await PostgresConnection.connect(
+                on: eventLoopGroup.any(),
+                configuration: connectionConfig,
+                id: connectionID,
+                logger: connectionLogger
+            ).get()
+
+            return ConnectionAndMetadata(connection: connection, maximalStreamsOnConnection: 1)
+        }
     }
 
     public func query<Clock: _Concurrency.Clock>(
@@ -160,44 +171,6 @@ public final class PostgresClient: Sendable {
 
     public func run() async {
         await self.pool.run()
-    }
-}
-
-@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
-struct PostgresConnectionFactory: ConnectionFactory {
-    typealias ConnectionIDGenerator = ConnectionPoolModule.ConnectionIDGenerator
-    typealias Request = ConnectionPoolModule.ConnectionRequest<PostgresConnection>
-    typealias KeepAliveBehavior = PostgresKeepAliveBehavor
-    typealias MetricsDelegate = PostgresClientMetrics
-    typealias ConnectionID = Int
-    typealias Connection = PostgresConnection
-    typealias Clock = ContinuousClock
-
-    let configuration: PostgresConnection.Configuration
-    let eventLoopGroup: any EventLoopGroup
-    let logger: Logger
-
-    init(configuration: PostgresConnection.Configuration, eventLoopGroup: any EventLoopGroup, logger: Logger) {
-        self.configuration = configuration
-        self.eventLoopGroup = eventLoopGroup
-        self.logger = logger
-    }
-
-    func makeConnection(
-        id: Int,
-        for pool: ConnectionPool<PostgresConnectionFactory, PostgresConnection, Int, ConnectionIDGenerator, ConnectionRequest<PostgresConnection>, Int, PostgresKeepAliveBehavor, PostgresClientMetrics, ContinuousClock>
-    ) async throws -> ConnectionAndMetadata<PostgresConnection> {
-        var connectionLogger = self.logger
-        connectionLogger[postgresMetadataKey: .connectionID] = "\(id)"
-
-        let connection = try await PostgresConnection.connect(
-            on: self.eventLoopGroup.any(),
-            configuration: self.configuration,
-            id: id,
-            logger: connectionLogger
-        ).get()
-
-        return ConnectionAndMetadata(connection: connection, maximalStreamsOnConnection: 1)
     }
 }
 

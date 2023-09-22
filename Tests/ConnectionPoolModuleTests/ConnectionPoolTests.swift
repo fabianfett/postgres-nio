@@ -14,12 +14,13 @@ final class ConnectionPoolTests: XCTestCase {
         let pool = ConnectionPool(
             configuration: config,
             idGenerator: ConnectionIDGenerator(),
-            factory: factory,
             requestType: ConnectionRequest<MockConnection>.self,
             keepAliveBehavior: MockPingPongBehavior(keepAliveFrequency: nil),
             metricsDelegate: NoOpConnectionPoolMetrics(connectionIDType: MockConnection.ID.self),
             clock: ContinuousClock()
-        )
+        ) {
+            try await factory.makeConnection(id: $0, for: $1)
+        }
 
         // the same connection is reused 1000 times
 

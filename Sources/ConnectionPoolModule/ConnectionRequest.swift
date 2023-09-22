@@ -48,20 +48,20 @@ fileprivate let requestIDGenerator = ConnectionPoolModule.ConnectionIDGenerator(
 extension ConnectionPool where Request == ConnectionRequest<Connection> {
     public convenience init(
         configuration: ConnectionPoolConfiguration,
-        idGenerator: ConnectionIDGenerator,
-        factory: Factory,
+        idGenerator: ConnectionIDGenerator = ConnectionPoolModule.ConnectionIDGenerator(),
         keepAliveBehavior: KeepAliveBehavior,
         metricsDelegate: MetricsDelegate,
-        clock: Clock
+        clock: Clock = ContinuousClock(),
+        connectionFactory: @escaping ConnectionFactory
     ) {
         self.init(
             configuration: configuration,
             idGenerator: idGenerator,
-            factory: factory,
             requestType: ConnectionRequest<Connection>.self,
             keepAliveBehavior: keepAliveBehavior,
             metricsDelegate: metricsDelegate,
-            clock: clock
+            clock: clock,
+            connectionFactory: connectionFactory
         )
     }
 
@@ -86,5 +86,11 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
         }
 
         return connection
+    }
+
+    public func withConnection<Result>(_ closure: (Connection) async throws -> Result) async throws -> Result {
+        let connection = try await self.leaseConnection()
+        defer { self.releaseConnection(connection) }
+        return try await closure(connection)
     }
 }

@@ -75,7 +75,7 @@ final class MockConnection: PooledConnection, @unchecked Sendable {
 }
 
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
-final class MockConnectionFactory<Clock: _Concurrency.Clock>: ConnectionFactory where Clock.Duration == Duration {
+final class MockConnectionFactory<Clock: _Concurrency.Clock> where Clock.Duration == Duration {
     typealias ConnectionIDGenerator = ConnectionPoolModule.ConnectionIDGenerator
     typealias Request = ConnectionRequest<MockConnection>
     typealias KeepAliveBehavior = MockPingPongBehavior
@@ -88,7 +88,7 @@ final class MockConnectionFactory<Clock: _Concurrency.Clock>: ConnectionFactory 
 
     func makeConnection(
         id: Int,
-        for pool: ConnectionPool<MockConnectionFactory, MockConnection, Int, ConnectionIDGenerator, ConnectionRequest<MockConnection>, Int, MockPingPongBehavior, NoOpConnectionPoolMetrics<Int>, Clock>
+        for pool: ConnectionPool<MockConnection, Int, ConnectionIDGenerator, ConnectionRequest<MockConnection>, Int, MockPingPongBehavior, NoOpConnectionPoolMetrics<Int>, Clock>
     ) async throws -> ConnectionAndMetadata<MockConnection> {
         try await withTaskCancellationHandler {
             let result = try await withCheckedThrowingContinuation { (checkedContinuation: CheckedContinuation<(MockConnection, UInt16), any Error>) in

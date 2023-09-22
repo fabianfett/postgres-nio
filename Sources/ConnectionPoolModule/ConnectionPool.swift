@@ -10,19 +10,12 @@ public protocol ConnectionKeepAliveBehavior: Sendable {
 }
 
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
-public protocol ConnectionFactory: Sendable {
-    associatedtype Connection: PooledConnection
-    associatedtype ConnectionID: Hashable where Connection.ID == ConnectionID
-    associatedtype ConnectionIDGenerator: ConnectionIDGeneratorProtocol where ConnectionIDGenerator.ID == ConnectionID
-    associatedtype Request: ConnectionRequestProtocol where Request.Connection == Connection
-    associatedtype KeepAliveBehavior: ConnectionKeepAliveBehavior where KeepAliveBehavior.Connection == Connection
-    associatedtype MetricsDelegate: ConnectionPoolMetricsDelegate where MetricsDelegate.ConnectionID == ConnectionID
-    associatedtype Clock: _Concurrency.Clock where Clock.Duration == Duration
+public struct NoOpKeepAliveBehavior<Connection: PooledConnection> {
+    var keepAliveFrequency: Duration? { nil }
 
-    func makeConnection(
-        id: ConnectionID,
-        pool: ConnectionPool<Self, Connection, ConnectionID, ConnectionIDGenerator, Request, Request.ID, KeepAliveBehavior, MetricsDelegate, Clock>
-    ) async throws -> ConnectionAndMetadata<Connection>
+    func runKeepAlive(for connection: Connection) async throws {}
+
+    public init(connectionType: Connection.Type) {}
 }
 
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
@@ -89,7 +82,6 @@ public protocol ConnectionRequestProtocol: Sendable {
 
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public final class ConnectionPool<
-    Factory: ConnectionFactory,
     Connection: PooledConnection,
     ConnectionID: Hashable & Sendable,
     ConnectionIDGenerator: ConnectionIDGeneratorProtocol,
@@ -99,13 +91,6 @@ public final class ConnectionPool<
     MetricsDelegate: ConnectionPoolMetricsDelegate,
     Clock: _Concurrency.Clock
 >: @unchecked Sendable where
-    Factory.Connection == Connection,
-    Factory.ConnectionID == ConnectionID,
-    Factory.ConnectionIDGenerator == ConnectionIDGenerator,
-    Factory.Request == Request,
-    Factory.KeepAliveBehavior == KeepAliveBehavior,
-    Factory.MetricsDelegate == MetricsDelegate,
-    Factory.Clock == Clock,
     Connection.ID == ConnectionID,
     ConnectionIDGenerator.ID == ConnectionID,
     Request.Connection == Connection,
@@ -114,11 +99,13 @@ public final class ConnectionPool<
     MetricsDelegate.ConnectionID == ConnectionID,
     Clock.Duration == Duration
 {
+    public typealias ConnectionFactory = @Sendable (ConnectionID, ConnectionPool<Connection, ConnectionID, ConnectionIDGenerator, Request, RequestID, KeepAliveBehavior, MetricsDelegate, Clock>) async throws -> ConnectionAndMetadata<Connection>
+
     @usableFromInline
     typealias StateMachine = PoolStateMachine<Connection, ConnectionIDGenerator, ConnectionID, Request, Request.ID, CheckedContinuation<Void, Never>>
 
     @usableFromInline
-    let factory: Factory
+    let factory: ConnectionFactory
 
     @usableFromInline
     let keepAliveBehavior: KeepAliveBehavior
@@ -147,14 +134,14 @@ public final class ConnectionPool<
     public init(
         configuration: ConnectionPoolConfiguration,
         idGenerator: ConnectionIDGenerator,
-        factory: Factory,
         requestType: Request.Type,
         keepAliveBehavior: KeepAliveBehavior,
         metricsDelegate: MetricsDelegate,
-        clock: Clock
+        clock: Clock,
+        connectionFactory: @escaping ConnectionFactory
     ) {
         self.clock = clock
-        self.factory = factory
+        self.factory = connectionFactory
         self.keepAliveBehavior = keepAliveBehavior
         self.metricsDelegate = metricsDelegate
         self.configuration = configuration
@@ -385,7 +372,7 @@ public final class ConnectionPool<
             self.metricsDelegate.startedConnecting(id: request.connectionID)
 
             do {
-                let bundle = try await self.factory.makeConnection(id: request.connectionID, for: self)
+                let bundle = try await self.factory(request.connectionID, self)
                 self.connectionEstablished(bundle)
                 bundle.connection.onClose {
                     self.connectionDidClose(bundle.connection, error: $0)
