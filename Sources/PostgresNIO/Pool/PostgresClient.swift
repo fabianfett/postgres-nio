@@ -131,7 +131,7 @@ public final class PostgresClient: Sendable {
             idGenerator: ConnectionIDGenerator(),
             requestType: ConnectionRequest<PostgresConnection>.self,
             keepAliveBehavior: .init(configuration, logger: backgroundLogger),
-            metricsDelegate: .init(logger: backgroundLogger),
+            observabilityDelegate: .init(logger: backgroundLogger),
             clock: ContinuousClock()
         ) { (connectionID, pool) in
             var connectionLogger = backgroundLogger
@@ -202,7 +202,7 @@ extension PostgresKeepAliveBehavor {
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 extension ConnectionPoolConfiguration {
     init(_ config: PostgresClient.Configuration) {
-        self = .init(coreCount: System.coreCount)
+        self = ConnectionPoolConfiguration()
         self.minimumConnectionCount = config.pool.minimumConnectionCount
         self.maximumConnectionSoftLimit = config.pool.maximumConnectionSoftLimit
         self.maximumConnectionHardLimit = config.pool.maximumConnectionHardLimit

@@ -50,7 +50,7 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
         configuration: ConnectionPoolConfiguration,
         idGenerator: ConnectionIDGenerator = ConnectionPoolModule.ConnectionIDGenerator(),
         keepAliveBehavior: KeepAliveBehavior,
-        metricsDelegate: MetricsDelegate,
+        observabilityDelegate: ObservabilityDelegate,
         clock: Clock = ContinuousClock(),
         connectionFactory: @escaping ConnectionFactory
     ) {
@@ -59,7 +59,7 @@ extension ConnectionPool where Request == ConnectionRequest<Connection> {
             idGenerator: idGenerator,
             requestType: ConnectionRequest<Connection>.self,
             keepAliveBehavior: keepAliveBehavior,
-            metricsDelegate: metricsDelegate,
+            observabilityDelegate: observabilityDelegate,
             clock: clock,
             connectionFactory: connectionFactory
         )

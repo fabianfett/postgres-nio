@@ -8,7 +8,7 @@ final class ConnectionPoolTests: XCTestCase {
     func testHappyPath() async {
         let factory = MockConnectionFactory<ContinuousClock>()
 
-        var config = ConnectionPoolConfiguration(coreCount: 1)
+        var config = ConnectionPoolConfiguration()
         config.minimumConnectionCount = 1
 
         let pool = ConnectionPool(
@@ -16,7 +16,7 @@ final class ConnectionPoolTests: XCTestCase {
             idGenerator: ConnectionIDGenerator(),
             requestType: ConnectionRequest<MockConnection>.self,
             keepAliveBehavior: MockPingPongBehavior(keepAliveFrequency: nil),
-            metricsDelegate: NoOpConnectionPoolMetrics(connectionIDType: MockConnection.ID.self),
+            observabilityDelegate: NoOpConnectionPoolMetrics(connectionIDType: MockConnection.ID.self),
             clock: ContinuousClock()
         ) {
             try await factory.makeConnection(id: $0, for: $1)

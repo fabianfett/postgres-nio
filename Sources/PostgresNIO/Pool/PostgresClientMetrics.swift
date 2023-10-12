@@ -1,7 +1,7 @@
 import ConnectionPoolModule
 import Logging
 
-final class PostgresClientMetrics: ConnectionPoolMetricsDelegate {
+final class PostgresClientMetrics: ConnectionPoolObservabilityDelegate {
     typealias ConnectionID = PostgresConnection.ID
 
     let logger: Logger
@@ -73,5 +73,13 @@ final class PostgresClientMetrics: ConnectionPoolMetricsDelegate {
 
     func requestQueueDepthChanged(_ newDepth: Int) {
 
+    }
+
+    func connectSucceeded(id: PostgresConnection.ID, streamCapacity: UInt16) {
+
+    }
+
+    func connectionUtilizationChanged(id: PostgresConnection.ID, streamsUsed: UInt16, streamCapacity: UInt16) {
+        
     }
 }
