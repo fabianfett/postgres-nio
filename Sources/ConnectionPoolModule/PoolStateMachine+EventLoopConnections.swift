@@ -88,9 +88,10 @@ extension PoolStateMachine {
                 }
 
                 @usableFromInline
-                var timerCancellationContinuation: TimerCancellationToken? {
+                mutating func cancelTimerIfScheduled() -> TimerCancellationToken? {
                     switch self {
                     case .scheduled(let timer):
+                        self = .notScheduled
                         return timer.cancellationContinuation
                     case .running, .notScheduled:
                         return nil
@@ -338,12 +339,12 @@ extension PoolStateMachine {
         @inlinable
         mutating func lease(streams newLeasedStreams: UInt16 = 1) -> LeaseAction {
             switch self.state {
-            case .idle(let connection, let maxStreams, let keepAlive, let idleTimer):
+            case .idle(let connection, let maxStreams, var keepAlive, let idleTimer):
                 var cancel = Max2Sequence<TimerCancellationToken>()
                 if let token = idleTimer?.cancellationContinuation {
                     cancel.append(token)
                 }
-                if let token = keepAlive.timerCancellationContinuation {
+                if let token = keepAlive.cancelTimerIfScheduled() {
                     cancel.append(token)
                 }
                 precondition(maxStreams >= newLeasedStreams + keepAlive.usedStreams, "Invalid state: \(self.state)")
@@ -495,12 +496,12 @@ extension PoolStateMachine {
         @inlinable
         mutating func close() -> CloseAction {
             switch self.state {
-            case .idle(let connection, let maxStreams, let keepAlive, let idleTimerState):
+            case .idle(let connection, let maxStreams, var keepAlive, let idleTimerState):
                 self.state = .closing(connection)
                 return CloseAction(
                     connection: connection,
                     cancelTimers: Max2Sequence(
-                        keepAlive.timerCancellationContinuation,
+                        keepAlive.cancelTimerIfScheduled(),
                         idleTimerState?.cancellationContinuation
                     ),
                     maxStreams: maxStreams
@@ -568,24 +569,24 @@ extension PoolStateMachine {
             case .backingOff(let timer):
                 return .init(connection: nil, timersToCancel: .init(timer.cancellationContinuation))
 
-            case .idle(let connection, let maxStreams, let keepAlive, let idleTimer):
+            case .idle(let connection, let maxStreams, var keepAlive, let idleTimer):
                 var timers = Max2Sequence<TimerCancellationToken>()
                 if let idleTimerToken = idleTimer?.cancellationContinuation {
                     timers.append(idleTimerToken)
                 }
-                if let keepAliveToken = keepAlive.timerCancellationContinuation {
+                if let keepAliveToken = keepAlive.cancelTimerIfScheduled() {
                     timers.append(keepAliveToken)
                 }
                 self.state = .closing(connection)
                 #warning("Should we add keep alive used streams here")
                 return .init(connection: connection, timersToCancel: timers, maxStreams: maxStreams, usedStreams: 0)
 
-            case .leased(let connection, let usedStreams, let maxStreams, let keepAlive):
+            case .leased(let connection, let usedStreams, let maxStreams, var keepAlive):
                 self.state = .closing(connection)
                 #warning("Should we add keep alive used streams here")
                 return .init(
                     connection: connection,
-                    timersToCancel: .init(keepAlive.timerCancellationContinuation),
+                    timersToCancel: .init(keepAlive.cancelTimerIfScheduled()),
                     maxStreams: maxStreams,
                     usedStreams: usedStreams
                 )
