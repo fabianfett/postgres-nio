@@ -8,6 +8,7 @@ struct ConnectionStateMachine {
         let backendKeyData: Optional<BackendKeyData>
         var parameters: [String: String]
         var transactionState: TransactionState
+        var releaseOnReadyForQuery: Bool
     }
     
     struct BackendKeyData {
@@ -515,8 +516,10 @@ struct ConnectionStateMachine {
             let connectionContext = ConnectionContext(
                 backendKeyData: backendKeyData,
                 parameters: parameters,
-                transactionState: transactionState)
-            
+                transactionState: transactionState,
+                releaseOnReadyForQuery: false
+            )
+
             self.state = .readyForQuery(connectionContext)
             return self.executeNextQueryFromQueue()
         case .extendedQuery(let extendedQuery, var connectionContext):
@@ -851,10 +854,7 @@ struct ConnectionStateMachine {
 
             let action = queryStateMachine.errorHappened(error)
             switch action {
-            case .sendParseDescribeBindExecuteSync,
-                 .sendParseDescribeSync,
-                 .sendBindExecuteSync,
-                 .succeedQuery,
+            case .succeedQuery,
                  .succeedPreparedStatementCreation,
                  .forwardRows,
                  .forwardStreamComplete,
@@ -1028,12 +1028,19 @@ extension ConnectionStateMachine {
 }
 
 extension ConnectionStateMachine {
-    mutating func modify(with action: ExtendedQueryStateMachine.Action) -> ConnectionStateMachine.ConnectionAction {
+    mutating func modify(with action: ExtendedQueryStateMachine.SendQueryAction) -> ConnectionStateMachine.ConnectionAction {
         switch action {
         case .sendParseDescribeBindExecuteSync(let query):
             return .sendParseDescribeBindExecuteSync(query)
         case .sendBindExecuteSync(let executeStatement):
             return .sendBindExecuteSync(executeStatement)
+        case .sendParseDescribeSync(name: let name, query: let query):
+            return .sendParseDescribeSync(name: name, query: query)
+        }
+    }
+
+    mutating func modify(with action: ExtendedQueryStateMachine.Action) -> ConnectionStateMachine.ConnectionAction {
+        switch action {
         case .failQuery(let requestContext, with: let error):
             let cleanupContext = self.setErrorAndCreateCleanupContextIfNeeded(error)
             return .failQuery(requestContext, with: error, cleanupContext: cleanupContext)
@@ -1056,8 +1063,6 @@ extension ConnectionStateMachine {
             return .read
         case .wait:
             return .wait
-        case .sendParseDescribeSync(name: let name, query: let query):
-            return .sendParseDescribeSync(name: name, query: query)
         case .succeedPreparedStatementCreation(let promise, with: let rowDescription):
             return .succeedPreparedStatementCreation(promise, with: rowDescription)
         case .failPreparedStatementCreation(let promise, with: let error):

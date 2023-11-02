@@ -25,10 +25,6 @@ struct ExtendedQueryStateMachine {
     }
     
     enum Action {
-        case sendParseDescribeBindExecuteSync(PostgresQuery)
-        case sendParseDescribeSync(name: String, query: String)
-        case sendBindExecuteSync(PSQLExecuteStatement)
-        
         // --- general actions
         case failQuery(EventLoopPromise<PSQLRowStream>, with: PSQLError)
         case succeedQuery(EventLoopPromise<PSQLRowStream>, with: QueryResult)
@@ -55,21 +51,27 @@ struct ExtendedQueryStateMachine {
         self.isCancelled = false
         self.state = .initialized(queryContext)
     }
-    
-    mutating func start() -> Action {
+
+    enum SendQueryAction {
+        case sendParseDescribeBindExecuteSync(PostgresQuery)
+        case sendParseDescribeSync(name: String, query: String)
+        case sendBindExecuteSync(PSQLExecuteStatement)
+    }
+
+    mutating func start() -> SendQueryAction {
         guard case .initialized(let queryContext) = self.state else {
             preconditionFailure("Start should only be called, if the query has been initialized")
         }
         
         switch queryContext.query {
         case .unnamed(let query, _):
-            return self.avoidingStateMachineCoW { state -> Action in
+            return self.avoidingStateMachineCoW { state -> SendQueryAction in
                 state = .messagesSent(queryContext)
                 return .sendParseDescribeBindExecuteSync(query)
             }
 
         case .executeStatement(let prepared, _):
-            return self.avoidingStateMachineCoW { state -> Action in
+            return self.avoidingStateMachineCoW { state -> SendQueryAction in
                 switch prepared.rowDescription {
                 case .some(let rowDescription):
                     state = .rowDescriptionReceived(queryContext, rowDescription.columns)
@@ -80,7 +82,7 @@ struct ExtendedQueryStateMachine {
             }
 
         case .prepareStatement(let name, let query, _):
-            return self.avoidingStateMachineCoW { state -> Action in
+            return self.avoidingStateMachineCoW { state -> SendQueryAction in
                 state = .messagesSent(queryContext)
                 return .sendParseDescribeSync(name: name, query: query)
             }
@@ -130,7 +132,11 @@ struct ExtendedQueryStateMachine {
             preconditionFailure("Invalid state: \(self.state)")
         }
     }
-    
+
+    enum ParseCompletedReceivedAction {
+
+    }
+
     mutating func parseCompletedReceived() -> Action {
         guard case .messagesSent(let queryContext) = self.state else {
             return self.setAndFireError(.unexpectedBackendMessage(.parseComplete))

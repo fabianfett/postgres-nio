@@ -91,7 +91,8 @@ extension ConnectionStateMachine {
         return ConnectionContext(
             backendKeyData: backendKeyData,
             parameters: paramaters,
-            transactionState: transactionState
+            transactionState: transactionState,
+            releaseOnReadyForQuery: false
         )
     }
 }
