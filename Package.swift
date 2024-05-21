@@ -51,6 +51,15 @@ let package = Package(
             ],
             path: "Sources/ConnectionPoolModule"
         ),
+        .target(
+            name: "_ConnectionPoolTestUtils",
+            dependencies: [
+                .product(name: "Atomics", package: "swift-atomics"),
+                .product(name: "DequeModule", package: "swift-collections"),
+                .target(name: "_ConnectionPoolModule"),
+            ],
+            path: "Sources/ConnectionPoolTestUtils"
+        ),
         .testTarget(
             name: "PostgresNIOTests",
             dependencies: [
@@ -63,6 +72,7 @@ let package = Package(
             name: "ConnectionPoolModuleTests",
             dependencies: [
                 .target(name: "_ConnectionPoolModule"),
+                .target(name: "_ConnectionPoolTestUtils"),
                 .product(name: "DequeModule", package: "swift-collections"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),

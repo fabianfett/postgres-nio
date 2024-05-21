@@ -1,4 +1,5 @@
 @testable import _ConnectionPoolModule
+import _ConnectionPoolTestUtils
 import Atomics
 import XCTest
 import NIOEmbedded
