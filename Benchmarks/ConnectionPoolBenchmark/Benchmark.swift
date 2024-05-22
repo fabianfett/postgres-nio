@@ -1,4 +1,4 @@
-import Benchmarks
+import Benchmark
 
 let benchmarks = {
     Benchmark("Minimal benchmark") { benchmark in
@@ -10,16 +10,17 @@ let benchmarks = {
         configuration: .init(
             metrics: BenchmarkMetric.all,
             maxDuration: .seconds(10)
-        )
-    ) { benchmark in
-        let _ = await withTaskGroup(of: Void.self, returning: Void.self, body: { taskGroup in
-            for _ in 0..<80  {
-                taskGroup.addTask {
-                    
+        ),
+        closure: { benchmark in
+            let _ = await withTaskGroup(of: Void.self, returning: Void.self) { taskGroup in
+                for _ in 0..<80  {
+                    taskGroup.addTask {
+
+                    }
+                }
+                for await _ in taskGroup {
                 }
             }
-            for await _ in taskGroup {
-            }
         }
-    }
+    )
 }
