@@ -1,4 +1,4 @@
-// swift-tools-version:5.7
+// swift-tools-version:5.10
 import PackageDescription
 
 let package = Package(
@@ -11,7 +11,6 @@ let package = Package(
     ],
     products: [
         .library(name: "PostgresNIO", targets: ["PostgresNIO"]),
-        .library(name: "_ConnectionPoolModule", targets: ["_ConnectionPoolModule"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0"),
@@ -23,6 +22,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.4.1"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.3"),
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.4.1"),
+
+        .package(url: "https://github.com/ordo-one/package-benchmark.git", from: "1.23.4"),
     ],
     targets: [
         .target(
@@ -84,6 +85,26 @@ let package = Package(
             dependencies: [
                 .target(name: "PostgresNIO"),
                 .product(name: "NIOTestUtils", package: "swift-nio"),
+            ]
+        ),
+        .executableTarget(
+            name: "ConnectionPoolBenchmark",
+            dependencies: [
+                .product(name: "Benchmark", package: "package-benchmark"),
+            ],
+            path: "Benchmarks/ConnectionPoolBenchmark",
+            plugins: [
+                .plugin(name: "BenchmarkPlugin", package: "package-benchmark"),
+            ]
+        ),
+        .executableTarget(
+            name: "PostgresNIOBenchmark",
+            dependencies: [
+                .product(name: "Benchmark", package: "package-benchmark"),
+            ],
+            path: "Benchmarks/PostgresNIOBenchmark",
+            plugins: [
+                .plugin(name: "BenchmarkPlugin", package: "package-benchmark"),
             ]
         ),
     ]
