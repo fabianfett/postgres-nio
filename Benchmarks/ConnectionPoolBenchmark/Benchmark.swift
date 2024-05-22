@@ -1,26 +1,48 @@
 import Benchmark
 
 let benchmarks = {
-    Benchmark("Minimal benchmark") { benchmark in
-        // measure something here
-    }
+    Benchmark(
+        "Lease and release",
+        configuration: Benchmark.Configuration(
+            metrics: [
+                .instructions,
+                .wallClock,
+                .cpuTotal,
+                .contextSwitches,
+                .mallocCountTotal,
+            ],
+            scalingFactor: .kilo,
+            maxDuration: .seconds(3)
+        ),
+        closure: ConnectionPoolBenchmarks().leaseAndRelease(benchmark:)
+    )
 
     Benchmark(
-        "All metrics, full concurrency, async",
-        configuration: .init(
-            metrics: BenchmarkMetric.all,
+        "Lease and release 30x concurrently",
+        configuration: Benchmark.Configuration(
+            metrics: [
+                .instructions,
+                .wallClock,
+                .cpuTotal,
+                .contextSwitches,
+                .mallocCountTotal,
+            ],
+            scalingFactor: .one,
             maxDuration: .seconds(10)
         ),
-        closure: { benchmark in
-            let _ = await withTaskGroup(of: Void.self, returning: Void.self) { taskGroup in
-                for _ in 0..<80  {
-                    taskGroup.addTask {
-
-                    }
-                }
-                for await _ in taskGroup {
-                }
-            }
-        }
+        closure: ConnectionPoolBenchmarks().leaseAndReleaseHighlyConcurrently(benchmark:)
     )
+
+    Benchmark(
+        "Lease and release 2000x concurrently",
+        configuration: Benchmark.Configuration(
+            metrics: [
+                .wallClock,
+            ],
+            scalingFactor: .one,
+            maxDuration: .seconds(60)
+        ),
+        closure: ConnectionPoolBenchmarks().leaseAndReleaseMegaHighlyConcurrently(benchmark:)
+    )
+
 }

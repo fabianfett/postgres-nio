@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "postgres-nio",
     platforms: [
-        .macOS(.v13),
+        .macOS(.v14),
 //        .iOS(.v13),
 //        .watchOS(.v6),
 //        .tvOS(.v13),
@@ -91,6 +91,8 @@ let package = Package(
             name: "ConnectionPoolBenchmark",
             dependencies: [
                 .product(name: "Benchmark", package: "package-benchmark"),
+                .target(name: "_ConnectionPoolTestUtils"),
+                .target(name: "_ConnectionPoolModule"),
             ],
             path: "Benchmarks/ConnectionPoolBenchmark",
             plugins: [

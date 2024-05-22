@@ -1,6 +1,5 @@
 import DequeModule
 import _ConnectionPoolModule
-import _ConnectionPoolTestUtils
 
 // Sendability enforced through the lock
 public final class MockConnection: PooledConnection, Sendable {
